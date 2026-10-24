@@ -203,9 +203,8 @@ impl DisplayLease for VddLease {
             self.info.id = attach_with_mode(mode, reloaded, &protected)?;
             Ok(self.info())
         })();
-        r.map(|i| {
+        r.inspect(|i| {
             self.info = i.clone();
-            i
         })
         .map_err(|e| PlatformError::new(PlatformErrorKind::Display, format!("{e:#}")))
     }

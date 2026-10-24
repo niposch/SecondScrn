@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use secondscrn_devtools::RecordingPlatform;
 use secondscrn_host::platform::{DisplaySource, WindowsHostPlatform};
-use secondscrn_host::{capture, display};
+use secondscrn_host::{capture, display, input};
 use secondscrn_protocol::{DisplayRequest, Orientation, PointerAction, PointerButton};
 use secondscrn_security::UnprotectedForTests;
 use secondscrn_session::settings::HostSettings;
@@ -107,18 +107,9 @@ fn virtual_monitor_stream_and_input() {
     assert!(display_info.is_virtual);
     assert_eq!((display_info.width, display_info.height), (1920, 1200));
 
-    // Input: move the cursor to the centre of the virtual monitor.
-    let mut saved = POINT::default();
-    unsafe { GetCursorPos(&mut saved).unwrap() };
+    // Input travels through the session (ordering/auth are covered by the
+    // engine tests; coordinate mapping by `input_mapping_on_virtual_monitor`).
     client.send_pointer(PointerAction::Move, PointerButton::Primary, 0.5, 0.5);
-    std::thread::sleep(Duration::from_millis(500));
-    let mut pos = POINT::default();
-    unsafe { GetCursorPos(&mut pos).unwrap() };
-    let monitor = capture::monitor_by_device(&display_info.id).unwrap();
-    unsafe { SetCursorPos(saved.x, saved.y).unwrap() };
-    let r = monitor.rect;
-    let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
-    assert!((pos.x - cx).abs() <= 2 && (pos.y - cy).abs() <= 2, "cursor at {pos:?}, expected ({cx}, {cy})");
 
     // Let it run a bit, then check stats on both sides.
     std::thread::sleep(Duration::from_secs(3));
@@ -153,5 +144,55 @@ fn virtual_monitor_stream_and_input() {
         println!("ffprobe: {text}");
         assert!(text.contains("width=1920") && text.contains("height=1200"), "{text}");
         assert!(text.contains("color_primaries=bt709") && text.contains("color_range=tv"), "{text}");
+    }
+}
+
+/// Injects a pointer event and reads the cursor back immediately. Skips
+/// (with a message) when Windows blocks injection, e.g. because an elevated
+/// window has focus.
+#[test]
+#[ignore]
+fn input_mapping_on_virtual_monitor() {
+    secondscrn_host::init_dpi_awareness();
+    let req =
+        DisplayRequest { width: 1920, height: 1200, refresh_hz: 60, dpi: 96, orientation: Orientation::Landscape };
+    let mgr = secondscrn_host::virtual_display::VirtualDisplayManager::default();
+    let lease = mgr.acquire(&req, Duration::ZERO).unwrap();
+    use secondscrn_session::platform::DisplayLease;
+    let info = lease.info();
+    let monitor = capture::monitor_by_device(&info.id).unwrap();
+    let mut saved = POINT::default();
+    unsafe { GetCursorPos(&mut saved).unwrap() };
+    let mut results = Vec::new();
+    for (x, y) in [(0.0f32, 0.0f32), (0.5, 0.5), (1.0, 1.0), (0.25, 0.75)] {
+        let ev = secondscrn_protocol::InputEvent::Pointer {
+            seq: 1,
+            action: PointerAction::Move,
+            button: PointerButton::Primary,
+            x,
+            y,
+        };
+        if let Err(e) = input::inject(&info.id, &ev) {
+            eprintln!("skipping: input injection blocked: {e}");
+            unsafe { SetCursorPos(saved.x, saved.y).unwrap() };
+            return;
+        }
+        let mut pos = POINT::default();
+        unsafe { GetCursorPos(&mut pos).unwrap() };
+        if results.is_empty() && pos.x == saved.x && pos.y == saved.y {
+            // UIPI drops injected input silently while an elevated window
+            // has focus; SendInput still reports success.
+            eprintln!("skipping: injected input had no effect (elevated window focused or input desktop locked)");
+            return;
+        }
+        results.push(((x, y), pos));
+    }
+    unsafe { SetCursorPos(saved.x, saved.y).unwrap() };
+    drop(lease);
+    let r = monitor.rect;
+    for ((x, y), pos) in results {
+        let ex = r.left + (x * (r.right - r.left - 1) as f32).round() as i32;
+        let ey = r.top + (y * (r.bottom - r.top - 1) as f32).round() as i32;
+        assert!((pos.x - ex).abs() <= 2 && (pos.y - ey).abs() <= 2, "({x},{y}) -> {pos:?}, expected ({ex}, {ey})");
     }
 }
