@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="SecondScrn.Views.TrayPopup"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="SecondScrn quick controls">
+    <Grid x:Name="Root" Padding="20,16" RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel Orientation="Horizontal" Spacing="10">
+            <Image Source="ms-appx:///Assets/SecondScrn.png" Width="20" Height="20" />
+            <TextBlock Text="SecondScrn" Style="{StaticResource BodyStrongTextBlockStyle}" VerticalAlignment="Center" />
+        </StackPanel>
+        <StackPanel Grid.Row="1" Spacing="2">
+            <TextBlock Text="{x:Bind ViewModel.ConnectionTitle, Mode=OneWay}" Style="{StaticResource SubtitleTextBlockStyle}" TextWrapping="Wrap" />
+            <TextBlock Text="{x:Bind ViewModel.HealthText, Mode=OneWay}" Style="{StaticResource Caption}" />
+        </StackPanel>
+        <Grid Grid.Row="2" ColumnSpacing="12" RowSpacing="4" Visibility="{x:Bind ViewModel.ConnectedVisibility, Mode=OneWay}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition />
+                <RowDefinition />
+                <RowDefinition />
+            </Grid.RowDefinitions>
+            <TextBlock Text="Display" Style="{StaticResource Caption}" />
+            <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.ResolutionText, Mode=OneWay}" />
+            <TextBlock Grid.Row="1" Text="Frame rate" Style="{StaticResource Caption}" />
+            <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind ViewModel.FpsText, Mode=OneWay}" />
+            <TextBlock Grid.Row="2" Text="Latency" Style="{StaticResource Caption}" />
+            <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind ViewModel.LatencyText, Mode=OneWay}" />
+        </Grid>
+        <TextBlock Grid.Row="2" Text="Open SecondScrn on your tablet to connect." TextWrapping="Wrap"
+                   Visibility="{x:Bind ViewModel.IdleVisibility, Mode=OneWay}" Style="{StaticResource Caption}" />
+        <ComboBox Grid.Row="3" Header="Quality" ItemsSource="{x:Bind ViewModel.Presets}"
+                  SelectedIndex="{x:Bind ViewModel.PresetIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+        <Grid Grid.Row="4" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Button Content="Disconnect" HorizontalAlignment="Stretch" IsEnabled="{x:Bind ViewModel.IsConnected, Mode=OneWay}" Click="OnDisconnect" />
+            <Button Grid.Column="1" Content="Open SecondScrn" HorizontalAlignment="Stretch" Style="{StaticResource AccentButtonStyle}" Click="OnOpen" />
+        </Grid>
+    </Grid>
+</Window>

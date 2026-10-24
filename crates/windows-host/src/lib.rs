@@ -10,6 +10,11 @@
 //! * [`api`]: the UniFFI API consumed by the WinUI application.
 
 #[cfg(windows)]
+uniffi::setup_scaffolding!();
+
+#[cfg(windows)]
+pub mod api;
+#[cfg(windows)]
 pub mod capture;
 #[cfg(windows)]
 pub mod cli;
@@ -25,6 +30,8 @@ pub mod dpapi;
 pub mod encoder;
 #[cfg(windows)]
 pub mod input;
+#[cfg(windows)]
+mod logging;
 #[cfg(windows)]
 pub mod pipeline;
 #[cfg(windows)]

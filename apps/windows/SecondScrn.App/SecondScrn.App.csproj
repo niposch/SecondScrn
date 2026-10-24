@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>SecondScrn</RootNamespace>
+    <AssemblyName>SecondScrn</AssemblyName>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Required by the UniFFI C# bindings. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Program.cs owns Main so Velopack and single-instance run first. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\SecondScrn.ico</ApplicationIcon>
+    <Version>0.1.0</Version>
+    <Product>SecondScrn</Product>
+    <Company>SecondScrn contributors</Company>
+    <Copyright>MIT License</Copyright>
+    <!-- Generated bindings produce warnings we don't control. -->
+    <NoWarn>$(NoWarn);CS8618;CS8625;CS8603;CS8600;CS8602;CS0108;CS1998</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\..'))</RepoRoot>
+    <RustProfile Condition="'$(RustProfile)' == ''">release</RustProfile>
+    <RustDll>$(RepoRoot)\target\$(RustProfile)\secondscrn_host.dll</RustDll>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
+    <PackageReference Include="Velopack" Version="1.2.161" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="$(RepoRoot)\packaging\vdd\*.ps1" Link="Driver\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="$(RepoRoot)\LICENSE" Link="LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="$(RepoRoot)\THIRD_PARTY_NOTICES.md" Link="THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(RepoRoot)\THIRD_PARTY_NOTICES.md')" />
+  </ItemGroup>
+
+  <!-- Build the Rust core and regenerate the C# bindings before compiling. -->
+  <Target Name="BuildRustCore" BeforeTargets="BeforeBuild" Condition="'$(SkipRust)' != 'true'">
+    <Exec Command="cargo build -p secondscrn-windows-host --profile $(RustProfile)" WorkingDirectory="$(RepoRoot)" />
+    <Exec Command="uniffi-bindgen-cs --library &quot;$(RustDll)&quot; --out-dir &quot;$(MSBuildProjectDirectory)\Generated&quot;" WorkingDirectory="$(RepoRoot)" />
+    <ItemGroup>
+      <Compile Remove="Generated\**" />
+      <Compile Include="Generated\**\*.cs" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <None Include="$(RustDll)" Link="secondscrn_host.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(RustDll)')" />
+  </ItemGroup>
+  <Target Name="CopyRustDll" AfterTargets="Build;Publish">
+    <Copy SourceFiles="$(RustDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(RustDll)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(PublishDir)' != ''" />
+  </Target>
+</Project>

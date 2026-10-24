@@ -115,12 +115,14 @@ private fun ConnectionBanner(state: ClientState, repo: ClientRepository) {
             }
             Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
             val needsPairing = (state.phase as? Phase.Failed)?.needsPairing == true
-            val host = state.hosts.firstOrNull { it.name == state.hostName }
+            val host = state.hosts.firstOrNull { it.name == state.hostName && it.paired }
             if (needsPairing && host != null) {
                 Button(onClick = {
                     repo.forget(host.fingerprint)
                     repo.connect(host.address, host.port.toInt(), null)
                 }) { Text("Pair again") }
+            } else if (failed && host != null) {
+                Button(onClick = { repo.connect(host.address, host.port.toInt(), host.fingerprint) }) { Text("Retry") }
             } else if (busy) {
                 TextButton(onClick = repo::disconnect) { Text("Cancel") }
             }

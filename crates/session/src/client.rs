@@ -545,6 +545,16 @@ async fn run_connection(
     let known: Option<KnownHost> =
         target.fingerprint.as_deref().and_then(|fp| lock(&inner.settings).known_host(fp).cloned());
     let pinned = known.as_ref().and_then(|k| Fingerprint::from_hex(&k.fingerprint));
+    if let Some(k) = &known {
+        // Shown in errors such as "identity changed" before the handshake completes.
+        lock(&inner.state).host = Some(HostSummary {
+            name: k.name.clone(),
+            fingerprint: k.fingerprint.clone(),
+            fingerprint_short: pinned.map(|f| f.short()).unwrap_or_default(),
+            address: target.address.clone(),
+            port: target.port,
+        });
+    }
     let connector = TlsConnector::from(Arc::new(client_config(&inner.identity, pinned, ALPN)?));
     let tls = match tokio::time::timeout(STEP_TIMEOUT, connector.connect(server_name(), tcp)).await {
         Err(_) => return Err(SessionError::Timeout("TLS handshake")),

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="SecondScrn.Views.StreamingPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer>
+        <StackPanel Padding="32,24" Spacing="12" MaxWidth="1000">
+            <TextBlock Text="Streaming" Style="{StaticResource PageTitle}" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel Spacing="12">
+                    <ComboBox Header="Quality" ItemsSource="{x:Bind ViewModel.Presets}" SelectedIndex="{x:Bind ViewModel.PresetIndex, Mode=TwoWay}" MinWidth="260" />
+                    <TextBlock Style="{StaticResource Caption}" Text="Automatic follows the network. Sharp text keeps a high minimum bitrate for crisp text. Weak Wi-Fi limits bitrate and frame rate. When bandwidth is scarce, SecondScrn lowers the frame rate before it lowers per-frame quality; the resolution never changes during a session." />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource Card}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Advanced" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <ComboBox Header="Codec" ItemsSource="{x:Bind ViewModel.Codecs}" SelectedIndex="{x:Bind ViewModel.CodecIndex, Mode=TwoWay}" MinWidth="260" />
+                    <ComboBox Header="Maximum frame rate" ItemsSource="{x:Bind ViewModel.FpsOptions}" SelectedIndex="{x:Bind ViewModel.MaxFpsIndex, Mode=TwoWay}" MinWidth="260" />
+                    <NumberBox Header="Maximum bitrate (Mbit/s, 0 = automatic)" Minimum="0" Maximum="150" SpinButtonPlacementMode="Inline"
+                               Width="260" HorizontalAlignment="Left" Value="{x:Bind ViewModel.MaxBitrate, Mode=TwoWay}" />
+                    <TextBlock Style="{StaticResource Caption}" Text="Codec, frame rate and bitrate limits apply to the next connection." />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource Card}">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="Hardware encoders" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <TextBlock Text="{x:Bind ViewModel.EncodersText, Mode=OneWay}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                    <TextBlock Style="{StaticResource Caption}" Text="Only encoders that were verified to work are listed. SecondScrn never falls back to software encoding." />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

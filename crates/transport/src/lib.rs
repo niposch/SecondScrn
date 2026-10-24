@@ -70,9 +70,24 @@ impl Default for InterfacePolicy {
     }
 }
 
-/// Usable local IPv4 addresses (also shown in the UI for manual connection).
+/// Usable local IPv4 addresses (also shown in the UI for manual connection),
+/// the address of the default-route interface first: virtual adapters
+/// (Hyper-V, WSL, VirtualBox) are rarely what a tablet can reach.
 pub fn local_addresses(include_loopback: bool) -> Vec<IpAddr> {
-    InterfacePolicy { include_loopback, only: Vec::new() }.addresses()
+    let mut list = InterfacePolicy { include_loopback, only: Vec::new() }.addresses();
+    if let Some(primary) = primary_address() {
+        list.retain(|a| *a != primary);
+        list.insert(0, primary);
+    }
+    list
+}
+
+/// Local address used for the default route. Connecting a UDP socket sends
+/// nothing; it only asks the OS which interface it would use.
+fn primary_address() -> Option<IpAddr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?; // TEST-NET-1, never routed
+    s.local_addr().ok().map(|a| a.ip()).filter(|ip| !ip.is_unspecified())
 }
 
 impl InterfacePolicy {
