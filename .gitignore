@@ -1,0 +1,17 @@
+/target/
+**/bin/
+**/obj/
+*.user
+.vs/
+.idea/
+.gradle/
+**/build/
+local.properties
+*.apk
+*.aab
+/releases/
+/dist/
+apps/android/app/src/main/jniLibs/
+apps/android/app/src/main/java/uniffi/
+apps/windows/SecondScrn.App/Generated/
+*.log

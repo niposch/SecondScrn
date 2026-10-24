@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/protocol","crates/security"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/niposch/SecondScrn"
+rust-version = "1.88"
+
+[workspace.dependencies]
+secondscrn-protocol = { path = "crates/protocol" }
+secondscrn-security = { path = "crates/security" }
+secondscrn-discovery = { path = "crates/discovery" }
+secondscrn-transport = { path = "crates/transport" }
+secondscrn-session = { path = "crates/session" }
+secondscrn-diagnostics = { path = "crates/diagnostics" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+ring = "0.17"
+spake2 = "0.4"
+rand = "0.8"
+hex = "0.4"
+base64 = "0.22"
+str0m = { version = "0.24", default-features = false, features = ["rust-crypto"] }
+mdns-sd = "0.21"
+if-addrs = "0.15"
+uniffi = "0.31"
+zeroize = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
