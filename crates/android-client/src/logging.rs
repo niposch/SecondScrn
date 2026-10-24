@@ -14,9 +14,8 @@ pub fn init() -> LogBuffer {
         let filter = tracing_subscriber::EnvFilter::new("info,str0m=warn,is=warn");
         let registry = tracing_subscriber::registry().with(filter).with(buffer.layer::<tracing_subscriber::Registry>());
         #[cfg(target_os = "android")]
-        let registry = registry.with(
-            tracing_subscriber::fmt::layer().with_ansi(false).without_time().with_writer(|| logcat::Writer),
-        );
+        let registry = registry
+            .with(tracing_subscriber::fmt::layer().with_ansi(false).without_time().with_writer(|| logcat::Writer));
         let _ = registry.try_init();
         buffer
     })

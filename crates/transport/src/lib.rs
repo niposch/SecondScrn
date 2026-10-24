@@ -664,11 +664,12 @@ impl Driver {
                 self.stats.bytes_sent = s.peer_bytes_tx;
                 self.stats.bytes_received = s.peer_bytes_rx;
                 self.stats.bitrate_estimate_bps = s.bwe_tx.map(|b| b.as_u64()).or(self.estimate);
-                let loss = match self.role {
-                    Role::Sender { .. } => s.egress_loss_fraction,
-                    Role::Receiver => s.ingress_loss_fraction,
-                };
-                self.stats.loss = loss.or(self.stats.loss);
+                // Sender: TWCC feedback-based loss. The receiver's transport-wide
+                // estimate counts sequence gaps (e.g. dropped probe padding)
+                // and overstates loss; it uses RTCP stream stats instead.
+                if let Role::Sender { .. } = self.role {
+                    self.stats.loss = s.egress_loss_fraction.or(self.stats.loss);
+                }
                 self.emit(TransportEvent::Stats(self.stats)).await;
             }
             Event::MediaEgressStats(s) => {
@@ -683,6 +684,7 @@ impl Driver {
                 self.stats.nacks = s.nacks;
                 self.stats.plis = s.plis;
                 self.stats.jitter = Some(s.jitter);
+                self.stats.loss = s.loss.or(self.stats.loss);
             }
             _ => {}
         }

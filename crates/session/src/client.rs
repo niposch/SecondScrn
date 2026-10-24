@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use secondscrn_diagnostics::{LogBuffer, RateCounter};
+use secondscrn_diagnostics::LogBuffer;
 use secondscrn_protocol::{
     ALPN, ClientMessage, ClientStats, CodecCapability, DisplayRequest, HostMessage, InputEvent, Intent, Orientation,
     PROTOCOL_VERSION, PointerAction, PointerButton, QualityPreset, RejectReason, StreamConfig,
@@ -689,8 +689,8 @@ async fn run_connection(
     let mut nonce = 0u64;
     let mut frames_received = 0u64;
     let mut late_frames = 0u64;
-    let mut render_rate = RateCounter::default();
-    let mut last_decoded = 0u64;
+    // Render rate from frame deltas between (2 s apart) stats ticks.
+    let mut last_render: (u64, Instant) = (0, Instant::now());
     let mut last_bytes: Option<(u64, Instant)> = None;
     let mut metrics = ClientMetrics::default();
 
@@ -777,9 +777,11 @@ async fn run_connection(
                 ch.send(&ClientMessage::Ping { nonce }).await?;
                 let ds = worker.stats();
                 let now = Instant::now();
-                for _ in last_decoded..ds.frames_rendered { render_rate.tick(now); }
-                last_decoded = ds.frames_rendered;
-                metrics.render_fps = render_rate.rate(now);
+                let dt = now.duration_since(last_render.1).as_secs_f32();
+                if dt > 0.0 {
+                    metrics.render_fps = ds.frames_rendered.saturating_sub(last_render.0) as f32 / dt;
+                }
+                last_render = (ds.frames_rendered, now);
                 metrics.decode_ms_avg = ds.decode_ms_avg;
                 metrics.frames_received = frames_received;
                 metrics.frames_decoded = ds.frames_decoded;

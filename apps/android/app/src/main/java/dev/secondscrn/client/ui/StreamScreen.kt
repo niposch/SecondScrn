@@ -159,11 +159,14 @@ private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: 
 fun StreamStats(state: ClientState) {
     val s = state.stream ?: return
     val m = state.metrics
-    val rtt = m.rttMs?.let { "%.0f ms".format(it) } ?: "–"
-    val loss = m.lossPercent?.let { "%.1f %%".format(it) } ?: "–"
-    Text(
-        "${s.codec} ${s.width}×${s.height} · %.0f fps · %.1f Mbit/s · RTT $rtt · loss $loss · ${m.health.name.lowercase()}"
-            .format(m.renderFps, m.bitrateMbps),
-        style = MaterialTheme.typography.bodyMedium,
+    // Format each value on its own: composed text may contain '%'.
+    val parts = listOf(
+        "${s.codec} ${s.width}×${s.height}",
+        "%.0f fps".format(m.renderFps),
+        "%.1f Mbit/s".format(m.bitrateMbps),
+        "RTT " + (m.rttMs?.let { "%.0f ms".format(it) } ?: "–"),
+        "loss " + (m.lossPercent?.let { "%.1f".format(it) + " %" } ?: "–"),
+        m.health.name.lowercase(),
     )
+    Text(parts.joinToString(" · "), style = MaterialTheme.typography.bodyMedium)
 }

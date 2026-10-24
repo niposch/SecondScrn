@@ -12,6 +12,7 @@ use crate::platform::{DisplaySource, WindowsHostPlatform};
 pub fn run(args: &[String]) -> Result<()> {
     let mut source = DisplaySource::Virtual;
     let mut data_dir = crate::default_data_dir();
+    let mut pin_file: Option<std::path::PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -21,6 +22,12 @@ pub fn run(args: &[String]) -> Result<()> {
                     i += 1;
                 }
                 source = DisplaySource::Existing(dev);
+            }
+            // Development aid for unattended tests: read pairing codes from a
+            // file instead of the console. Equivalent to the local user typing.
+            "--pin-file" => {
+                pin_file = Some(args.get(i + 1).context("--pin-file needs a path")?.into());
+                i += 1;
             }
             "--data-dir" => {
                 data_dir = args.get(i + 1).context("--data-dir needs a path")?.into();
@@ -95,6 +102,26 @@ pub fn run(args: &[String]) -> Result<()> {
         });
     });
 
+    if let Some(path) = pin_file {
+        println!("reading pairing codes from {}", path.display());
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if let (Some(p), Ok(code)) = (engine.snapshot().pairing, std::fs::read_to_string(&path)) {
+                let _ = std::fs::remove_file(&path);
+                match engine.submit_pairing_pin(p.id, code.trim()) {
+                    Ok(()) => println!("code submitted"),
+                    Err(e) => println!("{e}"),
+                }
+            }
+            if path.with_extension("quit").exists() {
+                let _ = std::fs::remove_file(path.with_extension("quit"));
+                break;
+            }
+        }
+        engine.shutdown();
+        platform.release_displays();
+        return Ok(());
+    }
     for line in std::io::stdin().lock().lines() {
         let line = line?;
         let line = line.trim();

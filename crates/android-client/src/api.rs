@@ -231,7 +231,16 @@ pub fn to_ffi(s: &ClientSnapshot) -> ClientState {
         decoders: s
             .decoders
             .iter()
-            .map(|d| format!("{} ({}{}, up to {}x{})", d.codec, d.implementation, if d.hardware { "" } else { ", software" }, d.max_width, d.max_height))
+            .map(|d| {
+                format!(
+                    "{} ({}{}, up to {}x{})",
+                    d.codec,
+                    d.implementation,
+                    if d.hardware { "" } else { ", software" },
+                    d.max_width,
+                    d.max_height
+                )
+            })
             .collect(),
         device_fingerprint_short: s.device_fingerprint_short.clone(),
         preset: preset_from(s.settings.preset),
