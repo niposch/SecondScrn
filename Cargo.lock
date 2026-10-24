@@ -1266,6 +1266,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "secondscrn-graphics"
+version = "0.1.0"
+dependencies = [
+ "secondscrn-protocol",
+]
+
+[[package]]
 name = "secondscrn-protocol"
 version = "0.1.0"
 dependencies = [

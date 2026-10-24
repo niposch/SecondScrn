@@ -1,0 +1,9 @@
+[package]
+name = "secondscrn-graphics"
+description = "Colour conversion reference, test patterns and bitstream helpers for SecondScrn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+secondscrn-protocol.workspace = true

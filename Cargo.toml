@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol","crates/security","crates/transport","crates/diagnostics","crates/discovery","crates/session"]
+members = ["crates/protocol","crates/security","crates/transport","crates/diagnostics","crates/discovery","crates/session","crates/graphics"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +16,7 @@ secondscrn-discovery = { path = "crates/discovery" }
 secondscrn-transport = { path = "crates/transport" }
 secondscrn-session = { path = "crates/session" }
 secondscrn-diagnostics = { path = "crates/diagnostics" }
+secondscrn-graphics = { path = "crates/graphics" }
 
 anyhow = "1"
 thiserror = "2"
