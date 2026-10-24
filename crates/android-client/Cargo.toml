@@ -1,0 +1,28 @@
+[package]
+name = "secondscrn-android-client"
+description = "Android client platform for SecondScrn: MediaCodec decoding to a Surface and the UniFFI API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "secondscrn_client"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+secondscrn-protocol.workspace = true
+secondscrn-security.workspace = true
+secondscrn-session.workspace = true
+secondscrn-transport.workspace = true
+secondscrn-diagnostics.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+uniffi.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { version = "0.9", features = ["media", "api-level-30"] }
+ndk-sys = "0.6"
+jni = "0.21"
+android_log-sys = "0.3"
