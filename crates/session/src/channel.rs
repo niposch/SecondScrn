@@ -51,11 +51,7 @@ where
     }
 
     /// Receives the next message, failing on timeout, EOF or decode errors.
-    pub async fn recv_timeout(
-        &mut self,
-        timeout: Duration,
-        what: &'static str,
-    ) -> Result<In, SessionError> {
+    pub async fn recv_timeout(&mut self, timeout: Duration, what: &'static str) -> Result<In, SessionError> {
         match tokio::time::timeout(timeout, self.rx.recv()).await {
             Err(_) => Err(SessionError::Timeout(what)),
             Ok(None) => Err(SessionError::ConnectionClosed),

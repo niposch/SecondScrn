@@ -9,9 +9,7 @@ pub fn candidate_ports(sdp: &str) -> Vec<u16> {
         .filter_map(|c| {
             // foundation component transport priority address port typ ...
             let parts: Vec<&str> = c.split_whitespace().collect();
-            (parts.len() >= 6 && parts[2].eq_ignore_ascii_case("udp"))
-                .then(|| parts[5].parse().ok())
-                .flatten()
+            (parts.len() >= 6 && parts[2].eq_ignore_ascii_case("udp")).then(|| parts[5].parse().ok()).flatten()
         })
         .collect();
     ports.sort_unstable();
@@ -21,11 +19,7 @@ pub fn candidate_ports(sdp: &str) -> Vec<u16> {
 
 /// Value of the first `a=mid:` line.
 pub fn first_mid(sdp: &str) -> Option<String> {
-    sdp.lines().find_map(|l| {
-        l.trim()
-            .strip_prefix("a=mid:")
-            .map(|m| m.trim().to_string())
-    })
+    sdp.lines().find_map(|l| l.trim().strip_prefix("a=mid:").map(|m| m.trim().to_string()))
 }
 
 #[cfg(test)]

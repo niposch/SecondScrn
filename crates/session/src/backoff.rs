@@ -14,9 +14,7 @@ pub struct Backoff {
 
 impl Backoff {
     pub fn next_delay(&mut self) -> Duration {
-        let d = INITIAL
-            .saturating_mul(1u32 << self.attempt.min(16))
-            .min(MAX);
+        let d = INITIAL.saturating_mul(1u32 << self.attempt.min(16)).min(MAX);
         self.attempt = self.attempt.saturating_add(1);
         d
     }

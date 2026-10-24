@@ -174,12 +174,8 @@ pub enum QualityPreset {
 }
 
 impl QualityPreset {
-    pub const ALL: [QualityPreset; 4] = [
-        QualityPreset::Automatic,
-        QualityPreset::Sharp,
-        QualityPreset::Balanced,
-        QualityPreset::LowBandwidth,
-    ];
+    pub const ALL: [QualityPreset; 4] =
+        [QualityPreset::Automatic, QualityPreset::Sharp, QualityPreset::Balanced, QualityPreset::LowBandwidth];
 }
 
 /// Parameters of the video stream the host decided on.
@@ -280,17 +276,13 @@ pub enum RejectReason {
 impl std::fmt::Display for RejectReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            RejectReason::IncompatibleVersion => {
-                "the host and tablet app versions are incompatible"
-            }
+            RejectReason::IncompatibleVersion => "the host and tablet app versions are incompatible",
             RejectReason::NotPaired => "this tablet is not paired with the host",
             RejectReason::PairingDeclined => "pairing was declined or the code was wrong",
             RejectReason::PairingBusy => "the host is busy with another pairing request",
             RejectReason::Busy => "another tablet is already connected",
             RejectReason::NoCommonCodec => "no video codec is supported by both devices",
-            RejectReason::DisplayUnavailable => {
-                "the virtual display could not be created on the host"
-            }
+            RejectReason::DisplayUnavailable => "the virtual display could not be created on the host",
             RejectReason::InternalError => "the host encountered an internal error",
         })
     }
@@ -428,16 +420,10 @@ mod tests {
     fn client_messages_roundtrip() {
         roundtrip_client(ClientMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
-            device: DeviceInfo {
-                name: "Tab".into(),
-                model: "X".into(),
-                app_version: "0.1.0".into(),
-            },
+            device: DeviceInfo { name: "Tab".into(), model: "X".into(), app_version: "0.1.0".into() },
             intent: Intent::Pair,
         });
-        roundtrip_client(ClientMessage::PairStart {
-            spake: vec![0, 1, 2, 255],
-        });
+        roundtrip_client(ClientMessage::PairStart { spake: vec![0, 1, 2, 255] });
         roundtrip_client(ClientMessage::SessionRequest {
             display: DisplayRequest {
                 width: 2560,
@@ -466,21 +452,14 @@ mod tests {
                 y: 0.5,
             },
         });
-        roundtrip_client(ClientMessage::Stats {
-            stats: ClientStats::default(),
-        });
+        roundtrip_client(ClientMessage::Stats { stats: ClientStats::default() });
         roundtrip_client(ClientMessage::Goodbye);
     }
 
     #[test]
     fn host_messages_roundtrip() {
-        roundtrip_host(HostMessage::PairChallenge {
-            spake: vec![9; 33],
-            mac: vec![1; 32],
-        });
-        roundtrip_host(HostMessage::Rejected {
-            reason: RejectReason::NotPaired,
-        });
+        roundtrip_host(HostMessage::PairChallenge { spake: vec![9; 33], mac: vec![1; 32] });
+        roundtrip_host(HostMessage::Rejected { reason: RejectReason::NotPaired });
         roundtrip_host(HostMessage::SessionAccepted {
             stream: StreamConfig {
                 codec: Codec::Av1,
@@ -499,24 +478,19 @@ mod tests {
         // Guards against accidental renames that would break older peers.
         let json = serde_json::to_string(&ClientMessage::Ping { nonce: 3 }).unwrap();
         assert_eq!(json, r#"{"type":"ping","nonce":3}"#);
-        let json = serde_json::to_string(&HostMessage::Rejected {
-            reason: RejectReason::Busy,
-        })
-        .unwrap();
+        let json = serde_json::to_string(&HostMessage::Rejected { reason: RejectReason::Busy }).unwrap();
         assert_eq!(json, r#"{"type":"rejected","reason":"busy"}"#);
     }
 
     #[test]
     fn unknown_fields_are_ignored() {
-        let msg: ClientMessage =
-            serde_json::from_str(r#"{"type":"ping","nonce":1,"future_field":true}"#).unwrap();
+        let msg: ClientMessage = serde_json::from_str(r#"{"type":"ping","nonce":1,"future_field":true}"#).unwrap();
         assert_eq!(msg, ClientMessage::Ping { nonce: 1 });
     }
 
     #[test]
     fn invalid_base64_is_rejected() {
-        let res: Result<ClientMessage, _> =
-            serde_json::from_str(r#"{"type":"pair_start","spake":"!!"}"#);
+        let res: Result<ClientMessage, _> = serde_json::from_str(r#"{"type":"pair_start","spake":"!!"}"#);
         assert!(res.is_err());
     }
 }

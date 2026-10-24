@@ -37,10 +37,7 @@ pub enum PlatformErrorKind {
 
 impl PlatformError {
     pub fn new(kind: PlatformErrorKind, message: impl Into<String>) -> Self {
-        PlatformError {
-            kind,
-            message: message.into(),
-        }
+        PlatformError { kind, message: message.into() }
     }
 }
 
@@ -150,6 +147,5 @@ pub trait VideoDecoder: Send {
 pub trait ClientPlatform: Send + Sync + 'static {
     fn device_info(&self) -> DeviceInfo;
     fn decoders(&self) -> Vec<CodecCapability>;
-    fn create_decoder(&self, config: &StreamConfig)
-    -> Result<Box<dyn VideoDecoder>, PlatformError>;
+    fn create_decoder(&self, config: &StreamConfig) -> Result<Box<dyn VideoDecoder>, PlatformError>;
 }

@@ -184,30 +184,12 @@ mod tests {
 
     #[test]
     fn health_assessment() {
-        assert_eq!(
-            LinkHealth::assess(None, Some(0.0), 60.0, 60),
-            LinkHealth::Unknown
-        );
-        assert_eq!(
-            LinkHealth::assess(Some(5.0), Some(0.0), 60.0, 60),
-            LinkHealth::Good
-        );
-        assert_eq!(
-            LinkHealth::assess(Some(60.0), Some(0.0), 60.0, 60),
-            LinkHealth::Fair
-        );
-        assert_eq!(
-            LinkHealth::assess(Some(5.0), Some(0.1), 60.0, 60),
-            LinkHealth::Poor
-        );
+        assert_eq!(LinkHealth::assess(None, Some(0.0), 60.0, 60), LinkHealth::Unknown);
+        assert_eq!(LinkHealth::assess(Some(5.0), Some(0.0), 60.0, 60), LinkHealth::Good);
+        assert_eq!(LinkHealth::assess(Some(60.0), Some(0.0), 60.0, 60), LinkHealth::Fair);
+        assert_eq!(LinkHealth::assess(Some(5.0), Some(0.1), 60.0, 60), LinkHealth::Poor);
         // Static desktop: low fps without loss is healthy.
-        assert_eq!(
-            LinkHealth::assess(Some(5.0), Some(0.0), 2.0, 60),
-            LinkHealth::Good
-        );
-        assert_eq!(
-            LinkHealth::assess(Some(5.0), Some(0.02), 10.0, 60),
-            LinkHealth::Poor
-        );
+        assert_eq!(LinkHealth::assess(Some(5.0), Some(0.0), 2.0, 60), LinkHealth::Good);
+        assert_eq!(LinkHealth::assess(Some(5.0), Some(0.02), 10.0, 60), LinkHealth::Poor);
     }
 }

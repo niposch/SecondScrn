@@ -66,28 +66,18 @@ pub struct InterfacePolicy {
 
 impl Default for InterfacePolicy {
     fn default() -> Self {
-        InterfacePolicy {
-            include_loopback: true,
-            only: Vec::new(),
-        }
+        InterfacePolicy { include_loopback: true, only: Vec::new() }
     }
 }
 
 /// Usable local IPv4 addresses (also shown in the UI for manual connection).
 pub fn local_addresses(include_loopback: bool) -> Vec<IpAddr> {
-    InterfacePolicy {
-        include_loopback,
-        only: Vec::new(),
-    }
-    .addresses()
+    InterfacePolicy { include_loopback, only: Vec::new() }.addresses()
 }
 
 impl InterfacePolicy {
     pub fn loopback_only() -> Self {
-        InterfacePolicy {
-            include_loopback: true,
-            only: vec![IpAddr::from([127, 0, 0, 1])],
-        }
+        InterfacePolicy { include_loopback: true, only: vec![IpAddr::from([127, 0, 0, 1])] }
     }
 
     fn addresses(&self) -> Vec<IpAddr> {
@@ -190,8 +180,7 @@ impl FrameSender {
         match self.frames.try_send(frame) {
             Ok(()) => true,
             Err(_) => {
-                self.dropped
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 false
             }
         }
@@ -258,10 +247,7 @@ fn rtc_config(codec: Codec) -> RtcConfig {
     cfg.set_initial_stun_rto(Duration::from_millis(200));
     cfg.set_max_stun_rto(Duration::from_millis(1000));
     cfg.set_max_stun_retransmits(5);
-    let cfg = cfg
-        .clear_codecs()
-        .set_send_buffer_video(4000)
-        .set_stats_interval(Some(Duration::from_secs(1)));
+    let cfg = cfg.clear_codecs().set_send_buffer_video(4000).set_stats_interval(Some(Duration::from_secs(1)));
     match codec {
         Codec::H264 => cfg.enable_h264(true),
         Codec::H265 => cfg.enable_h265(true),
@@ -341,33 +327,18 @@ impl PendingSender {
         let (offer, pending) = change.apply().expect("offer has one media");
         let sdp = offer.to_sdp_string();
         Ok((
-            PendingSender {
-                rtc,
-                pending,
-                sockets,
-                mid,
-                codec: config.codec,
-                max_bitrate_bps: config.max_bitrate_bps,
-            },
+            PendingSender { rtc, pending, sockets, mid, codec: config.codec, max_bitrate_bps: config.max_bitrate_bps },
             sdp,
         ))
     }
 
     /// Applies the client's answer and starts the I/O task.
     pub fn accept_answer(mut self, answer_sdp: &str) -> Result<MediaHandle, TransportError> {
-        let answer = SdpAnswer::from_sdp_string(answer_sdp)
-            .map_err(|e| TransportError::Sdp(e.to_string()))?;
+        let answer = SdpAnswer::from_sdp_string(answer_sdp).map_err(|e| TransportError::Sdp(e.to_string()))?;
         self.rtc.sdp_api().accept_answer(self.pending, answer)?;
-        self.rtc
-            .bwe()
-            .set_desired_bitrate(str0m::bwe::Bitrate::bps(self.max_bitrate_bps));
+        self.rtc.bwe().set_desired_bitrate(str0m::bwe::Bitrate::bps(self.max_bitrate_bps));
         let codec = self.codec;
-        Ok(spawn_driver(
-            self.rtc,
-            self.sockets,
-            self.mid,
-            Role::Sender { codec, pt: None },
-        ))
+        Ok(spawn_driver(self.rtc, self.sockets, self.mid, Role::Sender { codec, pt: None }))
     }
 }
 
@@ -383,16 +354,12 @@ pub struct ReceiverConfig {
 
 /// Tablet side: accepts the host's offer and starts the I/O task. Returns the
 /// SDP answer to send back.
-pub async fn accept_offer(
-    config: ReceiverConfig,
-    offer_sdp: &str,
-) -> Result<(MediaHandle, String), TransportError> {
+pub async fn accept_offer(config: ReceiverConfig, offer_sdp: &str) -> Result<(MediaHandle, String), TransportError> {
     install_crypto();
     let sockets = bind_sockets(&config.interfaces).await?;
     let mut rtc = rtc_config(config.codec).build(Instant::now());
     add_candidates(&mut rtc, &sockets)?;
-    let offer =
-        SdpOffer::from_sdp_string(offer_sdp).map_err(|e| TransportError::Sdp(e.to_string()))?;
+    let offer = SdpOffer::from_sdp_string(offer_sdp).map_err(|e| TransportError::Sdp(e.to_string()))?;
     let answer = rtc.sdp_api().accept_offer(offer)?;
     if let Some(ip) = config.host_hint {
         for port in candidate_ports(offer_sdp) {
@@ -411,10 +378,7 @@ fn answer_mid(answer: &SdpAnswer) -> Option<Mid> {
 }
 
 enum Role {
-    Sender {
-        codec: Codec,
-        pt: Option<str0m::media::Pt>,
-    },
+    Sender { codec: Codec, pt: Option<str0m::media::Pt> },
     Receiver,
 }
 
@@ -444,11 +408,7 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
             loop {
                 match s.recv_from(&mut buf).await {
                     Ok((n, source)) => {
-                        let dg = Datagram {
-                            data: buf[..n].to_vec(),
-                            source,
-                            destination: local,
-                        };
+                        let dg = Datagram { data: buf[..n].to_vec(), source, destination: local };
                         if tx.send(dg).await.is_err() {
                             return;
                         }
@@ -489,10 +449,7 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
 
     MediaHandle {
         commands: cmd_tx,
-        frames: FrameSender {
-            frames: frame_tx,
-            dropped: Default::default(),
-        },
+        frames: FrameSender { frames: frame_tx, dropped: Default::default() },
         events: evt_rx,
     }
 }
@@ -557,12 +514,7 @@ impl Driver {
         };
         let input = Input::Receive(
             Instant::now(),
-            Receive {
-                proto: Protocol::Udp,
-                source: dg.source,
-                destination: dg.destination,
-                contents,
-            },
+            Receive { proto: Protocol::Udp, source: dg.source, destination: dg.destination, contents },
         );
         if self.rtc.accepts(&input) {
             self.rtc.handle_input(input)?;
@@ -573,9 +525,7 @@ impl Driver {
     fn handle_command(&mut self, cmd: Command) -> Result<(), TransportError> {
         match cmd {
             Command::SetDesiredBitrate(bps) => {
-                self.rtc
-                    .bwe()
-                    .set_desired_bitrate(str0m::bwe::Bitrate::bps(bps));
+                self.rtc.bwe().set_desired_bitrate(str0m::bwe::Bitrate::bps(bps));
                 Ok(())
             }
             Command::RequestKeyframe => {
@@ -609,10 +559,7 @@ impl Driver {
             }
         };
         let base = *self.first_frame_time.get_or_insert(frame.capture_time);
-        let micros = frame
-            .capture_time
-            .saturating_duration_since(base)
-            .as_micros() as u64;
+        let micros = frame.capture_time.saturating_duration_since(base).as_micros() as u64;
         let rtp_time = MediaTime::new(micros * 9 / 100, Frequency::NINETY_KHZ);
         writer.write(pt, frame.capture_time, rtp_time, frame.data)?;
         Ok(())
@@ -620,16 +567,11 @@ impl Driver {
 
     fn request_keyframe(&mut self) {
         let now = Instant::now();
-        if self
-            .last_keyframe_request
-            .is_some_and(|t| now.duration_since(t) < KEYFRAME_REQUEST_INTERVAL)
-        {
+        if self.last_keyframe_request.is_some_and(|t| now.duration_since(t) < KEYFRAME_REQUEST_INTERVAL) {
             return;
         }
         if let Some(mut writer) = self.rtc.writer(self.mid)
-            && writer
-                .request_keyframe(None, KeyframeRequestKind::Pli)
-                .is_ok()
+            && writer.request_keyframe(None, KeyframeRequestKind::Pli).is_ok()
         {
             self.last_keyframe_request = Some(now);
         }
@@ -641,11 +583,7 @@ impl Driver {
             match self.rtc.poll_output()? {
                 Output::Timeout(t) => return Ok(t),
                 Output::Transmit(t) => {
-                    if let Some(sock) = self
-                        .sockets
-                        .iter()
-                        .find(|s| s.local_addr().ok() == Some(t.source))
-                    {
+                    if let Some(sock) = self.sockets.iter().find(|s| s.local_addr().ok() == Some(t.source)) {
                         // UDP send errors (e.g. no route) are transient; ICE handles failover.
                         let _ = sock.try_send_to(&t.contents, t.destination);
                     }

@@ -84,10 +84,7 @@ impl HostSettings {
         self.devices
             .get(fingerprint_hex)
             .cloned()
-            .unwrap_or(DevicePreferences {
-                preset: None,
-                allow_auto_reconnect: true,
-            })
+            .unwrap_or(DevicePreferences { preset: None, allow_auto_reconnect: true })
     }
 
     /// Clamps values a hand-edited file could make unusable.
@@ -144,17 +141,11 @@ impl Default for ClientSettings {
 
 impl ClientSettings {
     pub fn known_host(&self, fingerprint_hex: &str) -> Option<&KnownHost> {
-        self.known_hosts
-            .iter()
-            .find(|h| h.fingerprint == fingerprint_hex)
+        self.known_hosts.iter().find(|h| h.fingerprint == fingerprint_hex)
     }
 
     pub fn upsert_host(&mut self, host: KnownHost) {
-        match self
-            .known_hosts
-            .iter_mut()
-            .find(|h| h.fingerprint == host.fingerprint)
-        {
+        match self.known_hosts.iter_mut().find(|h| h.fingerprint == host.fingerprint) {
             Some(existing) => *existing = host,
             None => self.known_hosts.push(host),
         }
@@ -162,8 +153,7 @@ impl ClientSettings {
 
     pub fn remove_host(&mut self, fingerprint_hex: &str) -> bool {
         let before = self.known_hosts.len();
-        self.known_hosts
-            .retain(|h| h.fingerprint != fingerprint_hex);
+        self.known_hosts.retain(|h| h.fingerprint != fingerprint_hex);
         before != self.known_hosts.len()
     }
 }
@@ -201,17 +191,10 @@ mod tests {
         let loaded: HostSettings = load(&path);
         assert_eq!(loaded, HostSettings::default());
 
-        let mut s = HostSettings {
-            preset: QualityPreset::Sharp,
-            max_fps: 30,
-            ..Default::default()
-        };
+        let mut s = HostSettings { preset: QualityPreset::Sharp, max_fps: 30, ..Default::default() };
         s.devices.insert(
             "ab".into(),
-            DevicePreferences {
-                preset: Some(QualityPreset::LowBandwidth),
-                allow_auto_reconnect: false,
-            },
+            DevicePreferences { preset: Some(QualityPreset::LowBandwidth), allow_auto_reconnect: false },
         );
         save(&path, &s).unwrap();
         let back: HostSettings = load(&path);
@@ -240,12 +223,7 @@ mod tests {
 
     #[test]
     fn sanitize_clamps() {
-        let s = HostSettings {
-            max_fps: 1000,
-            control_port: 0,
-            ..Default::default()
-        }
-        .sanitized();
+        let s = HostSettings { max_fps: 1000, control_port: 0, ..Default::default() }.sanitized();
         assert_eq!(s.max_fps, 240);
         assert_eq!(s.control_port, DEFAULT_CONTROL_PORT);
     }
@@ -262,10 +240,7 @@ mod tests {
             last_connected: None,
         };
         c.upsert_host(h.clone());
-        c.upsert_host(KnownHost {
-            last_address: "10.0.0.3".into(),
-            ..h
-        });
+        c.upsert_host(KnownHost { last_address: "10.0.0.3".into(), ..h });
         assert_eq!(c.known_hosts.len(), 1);
         assert_eq!(c.known_host("aa").unwrap().last_address, "10.0.0.3");
         assert!(c.remove_host("aa"));

@@ -57,17 +57,10 @@ async fn connect(codec: Codec) -> (MediaHandle, MediaHandle) {
     })
     .await
     .unwrap();
-    assert!(
-        !candidate_ports(&offer).is_empty(),
-        "offer must carry candidates"
-    );
+    assert!(!candidate_ports(&offer).is_empty(), "offer must carry candidates");
 
     let (receiver, answer) = accept_offer(
-        ReceiverConfig {
-            codec,
-            interfaces: InterfacePolicy::loopback_only(),
-            host_hint: Some([127, 0, 0, 1].into()),
-        },
+        ReceiverConfig { codec, interfaces: InterfacePolicy::loopback_only(), host_hint: Some([127, 0, 0, 1].into()) },
         &offer,
     )
     .await
@@ -79,9 +72,7 @@ async fn connect(codec: Codec) -> (MediaHandle, MediaHandle) {
 async fn wait_connected(h: &mut MediaHandle) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let ev = tokio::time::timeout_at(deadline.into(), h.events.recv())
-            .await
-            .expect("connect timeout");
+        let ev = tokio::time::timeout_at(deadline.into(), h.events.recv()).await.expect("connect timeout");
         match ev {
             Some(TransportEvent::Connected { .. }) => return,
             Some(TransportEvent::Closed { reason }) => panic!("closed: {reason}"),
@@ -123,11 +114,7 @@ async fn h264_frames_arrive_intact() {
             Err(_) => break,
         }
     }
-    assert_eq!(
-        received.len(),
-        sent.len(),
-        "all frames should arrive on loopback"
-    );
+    assert_eq!(received.len(), sent.len(), "all frames should arrive on loopback");
     assert!(received[0].keyframe, "first frame is detected as keyframe");
     assert!(received.iter().skip(1).all(|f| !f.keyframe));
     for (s, r) in sent.iter().zip(&received) {

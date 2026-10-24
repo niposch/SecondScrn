@@ -10,16 +10,14 @@ use std::time::{Duration, Instant};
 
 use secondscrn_diagnostics::LogBuffer;
 use secondscrn_protocol::{
-    ALPN, ClientMessage, CodecCapability, DeviceInfo, DisplayRequest, HostMessage, InputEvent,
-    Intent, PROTOCOL_VERSION, QualityPreset, RejectReason, StreamConfig,
+    ALPN, ClientMessage, CodecCapability, DeviceInfo, DisplayRequest, HostMessage, InputEvent, Intent,
+    PROTOCOL_VERSION, QualityPreset, RejectReason, StreamConfig,
 };
 use secondscrn_security::pairing::{HostPairing, normalize_pin};
 use secondscrn_security::tls::{PAIRING_EXPORTER_LABEL, peer_fingerprint, server_config};
 use secondscrn_security::trust::{TrustStore, TrustedPeer, now_unix};
 use secondscrn_security::{Fingerprint, Identity, SecretProtector};
-use secondscrn_transport::{
-    FrameSender, InterfacePolicy, PendingSender, SenderConfig, TransportEvent,
-};
+use secondscrn_transport::{FrameSender, InterfacePolicy, PendingSender, SenderConfig, TransportEvent};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -30,13 +28,10 @@ use crate::adapt::{BitrateController, BitratePolicy};
 use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STEP_TIMEOUT};
 use crate::negotiate::{NegotiationError, NegotiationInput, negotiate};
 use crate::platform::{
-    DisplayInfo, DisplayLease, DriverStatus, HostPlatform, PipelineSink, PlatformError,
-    VideoPipeline,
+    DisplayInfo, DisplayLease, DriverStatus, HostPlatform, PipelineSink, PlatformError, VideoPipeline,
 };
 use crate::settings::{self, DevicePreferences, HostSettings};
-use crate::snapshot::{
-    HostMetrics, HostSnapshot, LinkHealth, PairedDevice, PairingPrompt, SessionInfo, SessionPhase,
-};
+use crate::snapshot::{HostMetrics, HostSnapshot, LinkHealth, PairedDevice, PairingPrompt, SessionInfo, SessionPhase};
 
 /// How long the PC user has to type the PIN.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
@@ -129,10 +124,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl HostEngine {
     /// Starts the host on its own runtime.
-    pub fn start(
-        config: HostConfig,
-        platform: Arc<dyn HostPlatform>,
-    ) -> Result<Self, SessionError> {
+    pub fn start(config: HostConfig, platform: Arc<dyn HostPlatform>) -> Result<Self, SessionError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("secondscrn-host")
@@ -144,11 +136,7 @@ impl HostEngine {
     }
 
     /// Starts the host on an existing runtime (tests, embedding).
-    pub fn start_on(
-        handle: Handle,
-        config: HostConfig,
-        platform: Arc<dyn HostPlatform>,
-    ) -> Result<Self, SessionError> {
+    pub fn start_on(handle: Handle, config: HostConfig, platform: Arc<dyn HostPlatform>) -> Result<Self, SessionError> {
         std::fs::create_dir_all(&config.data_dir)?;
         let identity = Identity::load_or_create(
             &config.data_dir.join("identity.bin"),
@@ -156,8 +144,7 @@ impl HostEngine {
             config.protector.as_ref(),
         )?;
         let trust = TrustStore::load(&config.data_dir.join("paired-devices.json"))?;
-        let settings: HostSettings =
-            settings::load::<HostSettings>(&config.data_dir.join("settings.json")).sanitized();
+        let settings: HostSettings = settings::load::<HostSettings>(&config.data_dir.join("settings.json")).sanitized();
         let acceptor = TlsAcceptor::from(Arc::new(server_config(&identity, ALPN)?));
 
         let encoders = platform.encoders();
@@ -190,10 +177,7 @@ impl HostEngine {
         inner.restart_listener();
         handle.spawn(housekeeping(Arc::downgrade(&inner)));
         inner.publish();
-        Ok(HostEngine {
-            inner,
-            runtime: Mutex::new(None),
-        })
+        Ok(HostEngine { inner, runtime: Mutex::new(None) })
     }
 
     pub fn snapshot(&self) -> HostSnapshot {
@@ -210,8 +194,7 @@ impl HostEngine {
 
     /// The PC user typed the PIN shown on the tablet.
     pub fn submit_pairing_pin(&self, id: u64, pin: &str) -> Result<(), SessionError> {
-        let pin =
-            normalize_pin(pin).ok_or(SessionError::InvalidInput("the code must have 6 digits"))?;
+        let pin = normalize_pin(pin).ok_or(SessionError::InvalidInput("the code must have 6 digits"))?;
         self.decide_pairing(id, PairDecision::Pin(pin))
     }
 
@@ -221,15 +204,8 @@ impl HostEngine {
 
     fn decide_pairing(&self, id: u64, decision: PairDecision) -> Result<(), SessionError> {
         let mut st = lock(&self.inner.state);
-        let p = st
-            .pairing
-            .as_mut()
-            .filter(|p| p.prompt.id == id)
-            .ok_or(SessionError::NotFound("pairing request"))?;
-        let tx = p
-            .decision
-            .take()
-            .ok_or(SessionError::NotFound("pairing request"))?;
+        let p = st.pairing.as_mut().filter(|p| p.prompt.id == id).ok_or(SessionError::NotFound("pairing request"))?;
+        let tx = p.decision.take().ok_or(SessionError::NotFound("pairing request"))?;
         drop(st);
         let _ = tx.send(decision);
         Ok(())
@@ -237,15 +213,12 @@ impl HostEngine {
 
     /// Revokes a tablet: removes its pairing and ends its session.
     pub fn revoke_device(&self, fingerprint_hex: &str) -> Result<bool, SessionError> {
-        let fp = Fingerprint::from_hex(fingerprint_hex)
-            .ok_or(SessionError::InvalidInput("fingerprint"))?;
+        let fp = Fingerprint::from_hex(fingerprint_hex).ok_or(SessionError::InvalidInput("fingerprint"))?;
         let removed = lock(&self.inner.trust).remove(&fp)?;
         {
             let st = lock(&self.inner.state);
             if let Some(s) = st.session.as_ref().filter(|s| s.fingerprint == fp) {
-                let _ = s
-                    .commands
-                    .send(SessionCommand::Disconnect { reconnect: false });
+                let _ = s.commands.send(SessionCommand::Disconnect { reconnect: false });
             }
         }
         lock(&self.inner.settings).devices.remove(fingerprint_hex);
@@ -255,13 +228,8 @@ impl HostEngine {
         Ok(removed)
     }
 
-    pub fn set_device_preferences(
-        &self,
-        fingerprint_hex: &str,
-        prefs: DevicePreferences,
-    ) -> Result<(), SessionError> {
-        let fp = Fingerprint::from_hex(fingerprint_hex)
-            .ok_or(SessionError::InvalidInput("fingerprint"))?;
+    pub fn set_device_preferences(&self, fingerprint_hex: &str, prefs: DevicePreferences) -> Result<(), SessionError> {
+        let fp = Fingerprint::from_hex(fingerprint_hex).ok_or(SessionError::InvalidInput("fingerprint"))?;
         if !lock(&self.inner.trust).is_trusted(&fp) {
             return Err(SessionError::NotFound("paired device"));
         }
@@ -297,12 +265,8 @@ impl HostEngine {
         self.inner.save_settings();
         let st = lock(&self.inner.state);
         if let Some(s) = &st.session {
-            let device_preset = lock(&self.inner.settings)
-                .device(&s.fingerprint.to_hex())
-                .preset;
-            let _ = s
-                .commands
-                .send(SessionCommand::SetPreset(device_preset.unwrap_or(preset)));
+            let device_preset = lock(&self.inner.settings).device(&s.fingerprint.to_hex()).preset;
+            let _ = s.commands.send(SessionCommand::SetPreset(device_preset.unwrap_or(preset)));
         }
         drop(st);
         self.inner.publish();
@@ -348,22 +312,11 @@ impl HostEngine {
     /// A JSON report with secrets redacted, suitable for bug reports.
     pub fn export_diagnostics(&self) -> String {
         let snap = self.snapshot();
-        let logs = self
-            .inner
-            .logs
-            .as_ref()
-            .map(|l| l.recent(2000))
-            .unwrap_or_default();
+        let logs = self.inner.logs.as_ref().map(|l| l.recent(2000)).unwrap_or_default();
         secondscrn_diagnostics::export_report(
             vec![
-                (
-                    "app",
-                    serde_json::json!({ "role": "host", "version": self.inner.app_version }),
-                ),
-                (
-                    "os",
-                    serde_json::json!({ "family": std::env::consts::OS, "arch": std::env::consts::ARCH }),
-                ),
+                ("app", serde_json::json!({ "role": "host", "version": self.inner.app_version })),
+                ("os", serde_json::json!({ "family": std::env::consts::OS, "arch": std::env::consts::ARCH })),
                 ("state", serde_json::to_value(&snap).unwrap_or_default()),
             ],
             &logs,
@@ -410,10 +363,7 @@ fn placeholder_snapshot(settings: &HostSettings) -> HostSnapshot {
 }
 
 fn local_addresses() -> Vec<String> {
-    secondscrn_transport::local_addresses(false)
-        .into_iter()
-        .map(|ip| ip.to_string())
-        .collect()
+    secondscrn_transport::local_addresses(false).into_iter().map(|ip| ip.to_string()).collect()
 }
 
 impl HostInner {
@@ -518,7 +468,11 @@ impl HostInner {
                 st.last_error = None;
             }
             if discoverable && me.enable_mdns {
-                match secondscrn_discovery::Announcer::start(&me.host_name(), &me.identity.fingerprint().to_hex(), actual) {
+                match secondscrn_discovery::Announcer::start(
+                    &me.host_name(),
+                    &me.identity.fingerprint().to_hex(),
+                    actual,
+                ) {
                     Ok(a) => *lock(&me.announcer) = Some(a),
                     Err(e) => tracing::warn!(error = %e, "mDNS announcement failed; manual connection still works"),
                 }
@@ -579,8 +533,8 @@ async fn handle_connection(
         .map_err(|_| SessionError::Timeout("TLS handshake"))??;
     let (fp, exporter) = {
         let (_, conn) = tls.get_ref();
-        let fp = peer_fingerprint(conn.peer_certificates())
-            .ok_or(SessionError::Protocol("missing client certificate"))?;
+        let fp =
+            peer_fingerprint(conn.peer_certificates()).ok_or(SessionError::Protocol("missing client certificate"))?;
         let mut ekm = [0u8; 32];
         conn.export_keying_material(&mut ekm, PAIRING_EXPORTER_LABEL, None)
             .map_err(|_| SessionError::Protocol("TLS exporter unavailable"))?;
@@ -589,16 +543,9 @@ async fn handle_connection(
     let mut ch: HostChannel = ControlChannel::new(tls);
 
     let (device, intent) = match ch.recv_timeout(STEP_TIMEOUT, "hello").await? {
-        ClientMessage::Hello {
-            protocol_version,
-            device,
-            intent,
-        } => {
+        ClientMessage::Hello { protocol_version, device, intent } => {
             if protocol_version != PROTOCOL_VERSION {
-                ch.send(&HostMessage::Rejected {
-                    reason: RejectReason::IncompatibleVersion,
-                })
-                .await?;
+                ch.send(&HostMessage::Rejected { reason: RejectReason::IncompatibleVersion }).await?;
                 return Err(SessionError::Rejected(RejectReason::IncompatibleVersion));
             }
             (sanitize_device(device), intent)
@@ -618,10 +565,7 @@ async fn handle_connection(
     };
     match (intent, trusted) {
         (Intent::Connect, false) => {
-            ch.send(&HostMessage::Rejected {
-                reason: RejectReason::NotPaired,
-            })
-            .await?;
+            ch.send(&HostMessage::Rejected { reason: RejectReason::NotPaired }).await?;
             return Err(SessionError::Rejected(RejectReason::NotPaired));
         }
         (Intent::Connect, true) => ch.send(&hello).await?,
@@ -634,37 +578,16 @@ async fn handle_connection(
 
     if !lock(&inner.trust).is_trusted(&fp) {
         // Revoked while connecting.
-        ch.send(&HostMessage::Rejected {
-            reason: RejectReason::NotPaired,
-        })
-        .await?;
+        ch.send(&HostMessage::Rejected { reason: RejectReason::NotPaired }).await?;
         return Err(SessionError::Rejected(RejectReason::NotPaired));
     }
     let _ = lock(&inner.trust).touch(&fp);
     inner.publish();
 
     loop {
-        match ch
-            .recv_timeout(Duration::from_secs(60), "session request")
-            .await?
-        {
-            ClientMessage::SessionRequest {
-                display,
-                decoders,
-                preset: _,
-                preferred_codec,
-            } => {
-                return run_session(
-                    inner,
-                    ch,
-                    fp,
-                    device,
-                    peer,
-                    display,
-                    decoders,
-                    preferred_codec,
-                )
-                .await;
+        match ch.recv_timeout(Duration::from_secs(60), "session request").await? {
+            ClientMessage::SessionRequest { display, decoders, preset: _, preferred_codec } => {
+                return run_session(inner, ch, fp, device, peer, display, decoders, preferred_codec).await;
             }
             ClientMessage::Ping { nonce } => ch.send(&HostMessage::Pong { nonce }).await?,
             ClientMessage::Goodbye => return Ok(()),
@@ -675,12 +598,7 @@ async fn handle_connection(
 
 fn sanitize_device(mut d: DeviceInfo) -> DeviceInfo {
     let clean = |s: &str, max: usize| -> String {
-        s.chars()
-            .filter(|c| !c.is_control())
-            .take(max)
-            .collect::<String>()
-            .trim()
-            .to_string()
+        s.chars().filter(|c| !c.is_control()).take(max).collect::<String>().trim().to_string()
     };
     d.name = clean(&d.name, 64);
     if d.name.is_empty() {
@@ -704,20 +622,13 @@ async fn pair(
     let busy = {
         let mut st = lock(&inner.state);
         let now = Instant::now();
-        while st
-            .pairing_attempts
-            .front()
-            .is_some_and(|t| now.duration_since(*t) > PAIRING_WINDOW)
-        {
+        while st.pairing_attempts.front().is_some_and(|t| now.duration_since(*t) > PAIRING_WINDOW) {
             st.pairing_attempts.pop_front();
         }
         st.pairing.is_some() || st.pairing_attempts.len() >= PAIRING_MAX_ATTEMPTS
     };
     if busy {
-        ch.send(&HostMessage::Rejected {
-            reason: RejectReason::PairingBusy,
-        })
-        .await?;
+        ch.send(&HostMessage::Rejected { reason: RejectReason::PairingBusy }).await?;
         return Err(SessionError::Rejected(RejectReason::PairingBusy));
     }
     {
@@ -754,20 +665,12 @@ async fn pair(
         let pin = match decision {
             PairDecision::Pin(pin) => pin,
             PairDecision::Reject => {
-                ch.send(&HostMessage::Rejected {
-                    reason: RejectReason::PairingDeclined,
-                })
-                .await?;
+                ch.send(&HostMessage::Rejected { reason: RejectReason::PairingDeclined }).await?;
                 return Err(SessionError::Rejected(RejectReason::PairingDeclined));
             }
         };
-        let (pairing, spake, mac) = HostPairing::respond(
-            &pin,
-            inner.identity.fingerprint(),
-            fp,
-            &client_msg,
-            exporter,
-        )?;
+        let (pairing, spake, mac) =
+            HostPairing::respond(&pin, inner.identity.fingerprint(), fp, &client_msg, exporter)?;
         ch.send(&HostMessage::PairChallenge { spake, mac }).await?;
         let client_mac = match ch.recv_timeout(STEP_TIMEOUT, "pairing confirmation").await {
             Ok(ClientMessage::PairConfirm { mac }) => mac,
@@ -775,10 +678,7 @@ async fn pair(
             Ok(_) | Err(_) => return Err(SessionError::Rejected(RejectReason::PairingDeclined)),
         };
         if pairing.verify(&client_mac).is_err() {
-            ch.send(&HostMessage::Rejected {
-                reason: RejectReason::PairingDeclined,
-            })
-            .await?;
+            ch.send(&HostMessage::Rejected { reason: RejectReason::PairingDeclined }).await?;
             return Err(SessionError::Rejected(RejectReason::PairingDeclined));
         }
         lock(&inner.trust).add(TrustedPeer {
@@ -797,10 +697,7 @@ async fn pair(
     lock(&inner.state).pairing = None;
     match &result {
         Err(SessionError::Rejected(RejectReason::PairingDeclined)) => {
-            inner.set_error(Some(format!(
-                "Pairing with {} failed: wrong code or declined.",
-                device.name
-            )))
+            inner.set_error(Some(format!("Pairing with {} failed: wrong code or declined.", device.name)))
         }
         _ => inner.publish(),
     }
@@ -883,9 +780,7 @@ async fn run_session(
                 None
             }
             Some(s) => {
-                let _ = s
-                    .commands
-                    .send(SessionCommand::Disconnect { reconnect: false });
+                let _ = s.commands.send(SessionCommand::Disconnect { reconnect: false });
                 Some(Some(s.finished.clone()))
             }
             None => Some(None),
@@ -893,16 +788,12 @@ async fn run_session(
     };
     match admission {
         None => {
-            ch.send(&HostMessage::Rejected {
-                reason: RejectReason::Busy,
-            })
-            .await?;
+            ch.send(&HostMessage::Rejected { reason: RejectReason::Busy }).await?;
             return Err(SessionError::Rejected(RejectReason::Busy));
         }
         Some(Some(mut previous)) => {
             tracing::info!("replacing this tablet's previous session");
-            let _ =
-                tokio::time::timeout(Duration::from_secs(5), previous.wait_for(|done| *done)).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), previous.wait_for(|done| *done)).await;
         }
         Some(None) => {}
     }
@@ -934,25 +825,12 @@ async fn run_session(
         }
     };
     if !claimed {
-        ch.send(&HostMessage::Rejected {
-            reason: RejectReason::Busy,
-        })
-        .await?;
+        ch.send(&HostMessage::Rejected { reason: RejectReason::Busy }).await?;
         return Err(SessionError::Rejected(RejectReason::Busy));
     }
     inner.publish();
 
-    let result = stream(
-        &inner,
-        &mut ch,
-        id,
-        fp,
-        display_req,
-        decoders,
-        client_preferred,
-        &mut commands,
-    )
-    .await;
+    let result = stream(&inner, &mut ch, id, fp, display_req, decoders, client_preferred, &mut commands).await;
 
     {
         let mut st = lock(&inner.state);
@@ -1021,10 +899,7 @@ async fn stream(
     let mut lease: Box<dyn DisplayLease> = match lease {
         Ok(l) => l,
         Err(e) => {
-            ch.send(&HostMessage::Rejected {
-                reason: RejectReason::DisplayUnavailable,
-            })
-            .await?;
+            ch.send(&HostMessage::Rejected { reason: RejectReason::DisplayUnavailable }).await?;
             inner.set_error(Some(format!("Virtual display: {e}")));
             return Err(e.into());
         }
@@ -1039,8 +914,7 @@ async fn stream(
     });
 
     // --- WebRTC
-    let user_max =
-        (settings.max_bitrate_mbps > 0).then(|| settings.max_bitrate_mbps as u64 * 1_000_000);
+    let user_max = (settings.max_bitrate_mbps > 0).then(|| settings.max_bitrate_mbps as u64 * 1_000_000);
     let policy_for = |c: &StreamConfig, p: QualityPreset| {
         BitratePolicy::for_stream(c.codec, c.width, c.height, c.max_fps, p, user_max)
     };
@@ -1053,10 +927,7 @@ async fn stream(
         interfaces: inner.interfaces.clone(),
     })
     .await?;
-    ch.send(&HostMessage::SessionAccepted {
-        stream: config.clone(),
-    })
-    .await?;
+    ch.send(&HostMessage::SessionAccepted { stream: config.clone() }).await?;
     ch.send(&HostMessage::SdpOffer { sdp: offer }).await?;
     let answer = loop {
         match ch.recv_timeout(STEP_TIMEOUT, "SDP answer").await? {
@@ -1082,15 +953,10 @@ async fn stream(
             Ok::<_, PlatformError>(p)
         })
     };
-    let mut pipeline: Box<dyn VideoPipeline> = start_pipeline(
-        display.clone(),
-        config.clone(),
-        controller.current(),
-        media.frame_sender(),
-        err_tx.clone(),
-    )
-    .await
-    .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
+    let mut pipeline: Box<dyn VideoPipeline> =
+        start_pipeline(display.clone(), config.clone(), controller.current(), media.frame_sender(), err_tx.clone())
+            .await
+            .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
 
     let shared_display = Arc::new(Mutex::new(display.clone()));
     let input_tx = spawn_input_thread(inner.platform.clone(), shared_display.clone());
@@ -1243,11 +1109,7 @@ async fn stream(
 
     // Best effort: tell the tablet whether it should come back.
     if let Ok(reconnect) = outcome {
-        let _ = tokio::time::timeout(
-            Duration::from_secs(1),
-            ch.send(&HostMessage::Goodbye { reconnect }),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), ch.send(&HostMessage::Goodbye { reconnect })).await;
     }
     drop(pipeline);
     drop(media);

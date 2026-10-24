@@ -79,9 +79,7 @@ impl Identity {
     pub fn generate(common_name: &str) -> Result<Self, SecurityError> {
         let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
         let mut params = rcgen::CertificateParams::new(vec!["secondscrn.invalid".to_string()])?;
-        params
-            .distinguished_name
-            .push(rcgen::DnType::CommonName, common_name.to_string());
+        params.distinguished_name.push(rcgen::DnType::CommonName, common_name.to_string());
         let cert = params.self_signed(&key)?;
         let cert_der = cert.der().to_vec();
         Ok(Identity {
@@ -104,31 +102,18 @@ impl Identity {
     }
 
     /// Serialises the identity and encrypts it with `protector`.
-    pub fn to_protected_bytes(
-        &self,
-        protector: &dyn SecretProtector,
-    ) -> Result<Vec<u8>, SecurityError> {
-        let stored = StoredIdentity {
-            version: 1,
-            cert_der: self.cert_der.clone(),
-            key_der: self.key_der.to_vec(),
-        };
+    pub fn to_protected_bytes(&self, protector: &dyn SecretProtector) -> Result<Vec<u8>, SecurityError> {
+        let stored = StoredIdentity { version: 1, cert_der: self.cert_der.clone(), key_der: self.key_der.to_vec() };
         let plain = Zeroizing::new(serde_json::to_vec(&stored).expect("serialisable"));
         protector.protect(&plain)
     }
 
-    pub fn from_protected_bytes(
-        bytes: &[u8],
-        protector: &dyn SecretProtector,
-    ) -> Result<Self, SecurityError> {
+    pub fn from_protected_bytes(bytes: &[u8], protector: &dyn SecretProtector) -> Result<Self, SecurityError> {
         let plain = Zeroizing::new(protector.unprotect(bytes)?);
-        let stored: StoredIdentity = serde_json::from_slice(&plain)
-            .map_err(|e| SecurityError::CorruptIdentity(e.to_string()))?;
+        let stored: StoredIdentity =
+            serde_json::from_slice(&plain).map_err(|e| SecurityError::CorruptIdentity(e.to_string()))?;
         if stored.version != 1 {
-            return Err(SecurityError::CorruptIdentity(format!(
-                "unsupported version {}",
-                stored.version
-            )));
+            return Err(SecurityError::CorruptIdentity(format!("unsupported version {}", stored.version)));
         }
         // Validate that the key is usable before accepting the identity.
         rcgen::KeyPair::try_from(stored.key_der.as_slice())
@@ -163,9 +148,7 @@ impl Identity {
 
 impl fmt::Debug for Identity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Identity")
-            .field("fingerprint", &self.fingerprint)
-            .finish_non_exhaustive()
+        f.debug_struct("Identity").field("fingerprint", &self.fingerprint).finish_non_exhaustive()
     }
 }
 

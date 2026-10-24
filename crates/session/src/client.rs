@@ -9,19 +9,14 @@ use std::time::{Duration, Instant};
 
 use secondscrn_diagnostics::{LogBuffer, RateCounter};
 use secondscrn_protocol::{
-    ALPN, ClientMessage, ClientStats, CodecCapability, DisplayRequest, HostMessage, InputEvent,
-    Intent, Orientation, PROTOCOL_VERSION, PointerAction, PointerButton, QualityPreset,
-    RejectReason, StreamConfig,
+    ALPN, ClientMessage, ClientStats, CodecCapability, DisplayRequest, HostMessage, InputEvent, Intent, Orientation,
+    PROTOCOL_VERSION, PointerAction, PointerButton, QualityPreset, RejectReason, StreamConfig,
 };
 use secondscrn_security::pairing::{ClientPairing, generate_pin};
-use secondscrn_security::tls::{
-    PAIRING_EXPORTER_LABEL, client_config, peer_fingerprint, server_name,
-};
+use secondscrn_security::tls::{PAIRING_EXPORTER_LABEL, client_config, peer_fingerprint, server_name};
 use secondscrn_security::trust::now_unix;
 use secondscrn_security::{Fingerprint, Identity, SecretProtector};
-use secondscrn_transport::{
-    InterfacePolicy, ReceivedFrame, ReceiverConfig, TransportEvent, accept_offer,
-};
+use secondscrn_transport::{InterfacePolicy, ReceivedFrame, ReceiverConfig, TransportEvent, accept_offer};
 use tokio::net::TcpStream;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::{mpsc, watch};
@@ -32,9 +27,7 @@ use crate::backoff::Backoff;
 use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STEP_TIMEOUT};
 use crate::platform::{ClientPlatform, DecodeOutcome, DecoderStats, PlatformError};
 use crate::settings::{self, ClientSettings, KnownHost};
-use crate::snapshot::{
-    ClientMetrics, ClientPhase, ClientSnapshot, DiscoveredHost, HostSummary, LinkHealth,
-};
+use crate::snapshot::{ClientMetrics, ClientPhase, ClientSnapshot, DiscoveredHost, HostSummary, LinkHealth};
 
 /// How long the user has to type the PIN on the PC.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(130);
@@ -102,10 +95,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl ClientEngine {
-    pub fn start(
-        config: ClientConfig,
-        platform: Arc<dyn ClientPlatform>,
-    ) -> Result<Self, SessionError> {
+    pub fn start(config: ClientConfig, platform: Arc<dyn ClientPlatform>) -> Result<Self, SessionError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("secondscrn-client")
@@ -123,11 +113,8 @@ impl ClientEngine {
     ) -> Result<Self, SessionError> {
         std::fs::create_dir_all(&config.data_dir)?;
         let device = platform.device_info();
-        let identity = Identity::load_or_create(
-            &config.data_dir.join("identity.bin"),
-            &device.name,
-            config.protector.as_ref(),
-        )?;
+        let identity =
+            Identity::load_or_create(&config.data_dir.join("identity.bin"), &device.name, config.protector.as_ref())?;
         let settings: ClientSettings = settings::load(&config.data_dir.join("settings.json"));
         let (snapshot_tx, _) = watch::channel(ClientSnapshot {
             phase: ClientPhase::Idle,
@@ -168,10 +155,7 @@ impl ClientEngine {
             probe.publish();
         });
         inner.publish();
-        Ok(ClientEngine {
-            inner,
-            runtime: Mutex::new(None),
-        })
+        Ok(ClientEngine { inner, runtime: Mutex::new(None) })
     }
 
     pub fn snapshot(&self) -> ClientSnapshot {
@@ -191,8 +175,7 @@ impl ClientEngine {
     pub fn set_display(&self, display: DisplayRequest) {
         let changed = lock(&self.inner.display).replace(display) != Some(display);
         if changed {
-            self.inner
-                .send_to_session(ClientMessage::DisplayChanged { display });
+            self.inner.send_to_session(ClientMessage::DisplayChanged { display });
         }
     }
 
@@ -202,28 +185,18 @@ impl ClientEngine {
         let (cancel, cancel_rx) = watch::channel(false);
         *lock(&self.inner.connection) = Some(Connection { cancel });
         let inner = self.inner.clone();
-        self.inner
-            .handle
-            .spawn(connection_loop(inner, target, cancel_rx));
+        self.inner.handle.spawn(connection_loop(inner, target, cancel_rx));
     }
 
     /// Connects to the most recently used host that allows auto-reconnect.
     pub fn connect_last(&self) -> bool {
         let host = {
             let s = lock(&self.inner.settings);
-            s.known_hosts
-                .iter()
-                .filter(|h| h.auto_reconnect)
-                .max_by_key(|h| h.last_connected)
-                .cloned()
+            s.known_hosts.iter().filter(|h| h.auto_reconnect).max_by_key(|h| h.last_connected).cloned()
         };
         match host {
             Some(h) => {
-                self.connect(ConnectTarget {
-                    address: h.last_address,
-                    port: h.port,
-                    fingerprint: Some(h.fingerprint),
-                });
+                self.connect(ConnectTarget { address: h.last_address, port: h.port, fingerprint: Some(h.fingerprint) });
                 true
             }
             None => false,
@@ -253,25 +226,13 @@ impl ClientEngine {
 
     pub fn send_pointer(&self, action: PointerAction, button: PointerButton, x: f32, y: f32) {
         let seq = self.inner.input_seq.fetch_add(1, Ordering::Relaxed);
-        let event = InputEvent::Pointer {
-            seq,
-            action,
-            button,
-            x: x.clamp(0.0, 1.0),
-            y: y.clamp(0.0, 1.0),
-        };
+        let event = InputEvent::Pointer { seq, action, button, x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0) };
         self.inner.send_to_session(ClientMessage::Input { event });
     }
 
     pub fn send_scroll(&self, x: f32, y: f32, delta_x: f32, delta_y: f32) {
         let seq = self.inner.input_seq.fetch_add(1, Ordering::Relaxed);
-        let event = InputEvent::Scroll {
-            seq,
-            x: x.clamp(0.0, 1.0),
-            y: y.clamp(0.0, 1.0),
-            delta_x,
-            delta_y,
-        };
+        let event = InputEvent::Scroll { seq, x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0), delta_x, delta_y };
         self.inner.send_to_session(ClientMessage::Input { event });
     }
 
@@ -283,8 +244,7 @@ impl ClientEngine {
     pub fn set_preset(&self, preset: QualityPreset) {
         lock(&self.inner.settings).preset = preset;
         self.inner.save_settings();
-        self.inner
-            .send_to_session(ClientMessage::SetPreset { preset });
+        self.inner.send_to_session(ClientMessage::SetPreset { preset });
         self.inner.publish();
     }
 
@@ -297,11 +257,7 @@ impl ClientEngine {
     pub fn set_host_auto_reconnect(&self, fingerprint_hex: &str, enabled: bool) {
         {
             let mut s = lock(&self.inner.settings);
-            if let Some(h) = s
-                .known_hosts
-                .iter_mut()
-                .find(|h| h.fingerprint == fingerprint_hex)
-            {
+            if let Some(h) = s.known_hosts.iter_mut().find(|h| h.fingerprint == fingerprint_hex) {
                 h.auto_reconnect = enabled;
             }
         }
@@ -361,22 +317,11 @@ impl ClientEngine {
 
     pub fn export_diagnostics(&self) -> String {
         let snap = self.snapshot();
-        let logs = self
-            .inner
-            .logs
-            .as_ref()
-            .map(|l| l.recent(2000))
-            .unwrap_or_default();
+        let logs = self.inner.logs.as_ref().map(|l| l.recent(2000)).unwrap_or_default();
         secondscrn_diagnostics::export_report(
             vec![
-                (
-                    "app",
-                    serde_json::json!({ "role": "client", "version": self.inner.app_version }),
-                ),
-                (
-                    "device",
-                    serde_json::to_value(self.inner.platform.device_info()).unwrap_or_default(),
-                ),
+                ("app", serde_json::json!({ "role": "client", "version": self.inner.app_version })),
+                ("device", serde_json::to_value(self.inner.platform.device_info()).unwrap_or_default()),
                 ("state", serde_json::to_value(&snap).unwrap_or_default()),
             ],
             &logs,
@@ -472,13 +417,8 @@ impl SessionError {
     /// Errors where retrying cannot help without user action.
     fn is_fatal(&self) -> bool {
         match self {
-            SessionError::Rejected(r) => !matches!(
-                r,
-                RejectReason::InternalError | RejectReason::DisplayUnavailable
-            ),
-            SessionError::HostIdentityChanged
-            | SessionError::PairingFailed
-            | SessionError::InvalidInput(_) => true,
+            SessionError::Rejected(r) => !matches!(r, RejectReason::InternalError | RejectReason::DisplayUnavailable),
+            SessionError::HostIdentityChanged | SessionError::PairingFailed | SessionError::InvalidInput(_) => true,
             _ => false,
         }
     }
@@ -495,14 +435,10 @@ impl SessionError {
                 }
                 s + "."
             }
-            SessionError::HostIdentityChanged => {
-                "The PC's identity changed. If SecondScrn was reinstalled on the PC, \
+            SessionError::HostIdentityChanged => "The PC's identity changed. If SecondScrn was reinstalled on the PC, \
                 forget this PC and pair again. Otherwise someone may be impersonating it."
-                    .into()
-            }
-            SessionError::PairingFailed => {
-                "The code entered on the PC did not match. Try pairing again.".into()
-            }
+                .into(),
+            SessionError::PairingFailed => "The code entered on the PC did not match. Try pairing again.".into(),
             SessionError::Timeout(what) => format!("Timed out ({what})."),
             SessionError::Io(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
                 "The PC refused the connection. Is SecondScrn running on it?".into()
@@ -512,11 +448,7 @@ impl SessionError {
     }
 }
 
-async fn connection_loop(
-    inner: Arc<ClientInner>,
-    target: ConnectTarget,
-    mut cancel: watch::Receiver<bool>,
-) {
+async fn connection_loop(inner: Arc<ClientInner>, target: ConnectTarget, mut cancel: watch::Receiver<bool>) {
     let mut backoff = Backoff::default();
     let mut target = target;
     loop {
@@ -543,13 +475,9 @@ async fn connection_loop(
                 if e.is_fatal() || !paired {
                     let needs_pairing = matches!(
                         e,
-                        SessionError::Rejected(RejectReason::NotPaired)
-                            | SessionError::HostIdentityChanged
+                        SessionError::Rejected(RejectReason::NotPaired) | SessionError::HostIdentityChanged
                     );
-                    inner.set_phase(ClientPhase::Failed {
-                        message: e.user_message(),
-                        needs_pairing,
-                    });
+                    inner.set_phase(ClientPhase::Failed { message: e.user_message(), needs_pairing });
                     return;
                 }
                 if streamed {
@@ -603,47 +531,36 @@ async fn run_connection(
     streamed: &mut bool,
 ) -> Result<End, SessionError> {
     inner.set_phase(ClientPhase::Connecting);
-    let addr: SocketAddr = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        tokio::net::lookup_host((target.address.as_str(), target.port)),
-    )
-    .await
-    .map_err(|_| SessionError::Timeout("resolving the PC's address"))??
-    .next()
-    .ok_or(SessionError::InvalidInput("address"))?;
+    let addr: SocketAddr =
+        tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::lookup_host((target.address.as_str(), target.port)))
+            .await
+            .map_err(|_| SessionError::Timeout("resolving the PC's address"))??
+            .next()
+            .ok_or(SessionError::InvalidInput("address"))?;
     let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| SessionError::Timeout("connecting to the PC"))??;
     let _ = tcp.set_nodelay(true);
 
-    let known: Option<KnownHost> = target
-        .fingerprint
-        .as_deref()
-        .and_then(|fp| lock(&inner.settings).known_host(fp).cloned());
-    let pinned = known
-        .as_ref()
-        .and_then(|k| Fingerprint::from_hex(&k.fingerprint));
+    let known: Option<KnownHost> =
+        target.fingerprint.as_deref().and_then(|fp| lock(&inner.settings).known_host(fp).cloned());
+    let pinned = known.as_ref().and_then(|k| Fingerprint::from_hex(&k.fingerprint));
     let connector = TlsConnector::from(Arc::new(client_config(&inner.identity, pinned, ALPN)?));
-    let tls = match tokio::time::timeout(STEP_TIMEOUT, connector.connect(server_name(), tcp)).await
-    {
+    let tls = match tokio::time::timeout(STEP_TIMEOUT, connector.connect(server_name(), tcp)).await {
         Err(_) => return Err(SessionError::Timeout("TLS handshake")),
         Ok(Err(e)) => {
             let is_pin_failure = e
                 .get_ref()
                 .and_then(|i| i.downcast_ref::<rustls::Error>())
                 .is_some_and(|r| matches!(r, rustls::Error::InvalidCertificate(_)));
-            return Err(if is_pin_failure && pinned.is_some() {
-                SessionError::HostIdentityChanged
-            } else {
-                e.into()
-            });
+            return Err(if is_pin_failure && pinned.is_some() { SessionError::HostIdentityChanged } else { e.into() });
         }
         Ok(Ok(t)) => t,
     };
     let (host_fp, exporter) = {
         let (_, conn) = tls.get_ref();
-        let fp = peer_fingerprint(conn.peer_certificates())
-            .ok_or(SessionError::Protocol("missing host certificate"))?;
+        let fp =
+            peer_fingerprint(conn.peer_certificates()).ok_or(SessionError::Protocol("missing host certificate"))?;
         let mut ekm = [0u8; 32];
         conn.export_keying_material(&mut ekm, PAIRING_EXPORTER_LABEL, None)
             .map_err(|_| SessionError::Protocol("TLS exporter unavailable"))?;
@@ -652,44 +569,23 @@ async fn run_connection(
     let mut ch: ClientChannel = ControlChannel::new(tls);
     let device = {
         let mut d = inner.platform.device_info();
-        if let Some(n) = lock(&inner.settings)
-            .device_name
-            .clone()
-            .filter(|n| !n.trim().is_empty())
-        {
+        if let Some(n) = lock(&inner.settings).device_name.clone().filter(|n| !n.trim().is_empty()) {
             d.name = n;
         }
         d.app_version = inner.app_version.clone();
         d
     };
-    let intent = if pinned.is_some() {
-        Intent::Connect
-    } else {
-        Intent::Pair
-    };
-    ch.send(&ClientMessage::Hello {
-        protocol_version: PROTOCOL_VERSION,
-        device,
-        intent,
-    })
-    .await?;
+    let intent = if pinned.is_some() { Intent::Connect } else { Intent::Pair };
+    ch.send(&ClientMessage::Hello { protocol_version: PROTOCOL_VERSION, device, intent }).await?;
     let host_info = expect(&mut ch, STEP_TIMEOUT, "host hello", |m| match m {
-        HostMessage::Hello {
-            host,
-            protocol_version,
-        } if protocol_version == PROTOCOL_VERSION => Some(Ok(host)),
-        HostMessage::Hello { .. } => Some(Err(SessionError::Rejected(
-            RejectReason::IncompatibleVersion,
-        ))),
+        HostMessage::Hello { host, protocol_version } if protocol_version == PROTOCOL_VERSION => Some(Ok(host)),
+        HostMessage::Hello { .. } => Some(Err(SessionError::Rejected(RejectReason::IncompatibleVersion))),
         _ => None,
     })
     .await??;
 
     if intent == Intent::Pair {
-        expect(&mut ch, STEP_TIMEOUT, "pairing", |m| {
-            matches!(m, HostMessage::PairPending).then_some(())
-        })
-        .await?;
+        expect(&mut ch, STEP_TIMEOUT, "pairing", |m| matches!(m, HostMessage::PairPending).then_some(())).await?;
         let pin = generate_pin();
         let (pairing, msg) = ClientPairing::start(&pin, host_fp, inner.identity.fingerprint());
         {
@@ -704,25 +600,15 @@ async fn run_connection(
         }
         inner.set_phase(ClientPhase::Pairing { pin });
         ch.send(&ClientMessage::PairStart { spake: msg }).await?;
-        let (spake, mac) = expect(
-            &mut ch,
-            PAIRING_TIMEOUT,
-            "PIN entry on the PC",
-            |m| match m {
-                HostMessage::PairChallenge { spake, mac } => Some((spake, mac)),
-                _ => None,
-            },
-        )
-        .await?;
-        let confirm = pairing
-            .finish(&spake, &mac, &exporter)
-            .map_err(|_| SessionError::PairingFailed)?;
-        ch.send(&ClientMessage::PairConfirm { mac: confirm })
-            .await?;
-        expect(&mut ch, STEP_TIMEOUT, "pairing confirmation", |m| {
-            matches!(m, HostMessage::PairComplete).then_some(())
+        let (spake, mac) = expect(&mut ch, PAIRING_TIMEOUT, "PIN entry on the PC", |m| match m {
+            HostMessage::PairChallenge { spake, mac } => Some((spake, mac)),
+            _ => None,
         })
         .await?;
+        let confirm = pairing.finish(&spake, &mac, &exporter).map_err(|_| SessionError::PairingFailed)?;
+        ch.send(&ClientMessage::PairConfirm { mac: confirm }).await?;
+        expect(&mut ch, STEP_TIMEOUT, "pairing confirmation", |m| matches!(m, HostMessage::PairComplete).then_some(()))
+            .await?;
         tracing::info!(host = %host_info.name, fingerprint = %host_fp, "paired with host");
         target.fingerprint = Some(host_fp.to_hex());
     }
@@ -730,10 +616,7 @@ async fn run_connection(
     // Remember the host and its current address.
     {
         let mut s = lock(&inner.settings);
-        let auto = s
-            .known_host(&host_fp.to_hex())
-            .map(|h| h.auto_reconnect)
-            .unwrap_or(true);
+        let auto = s.known_host(&host_fp.to_hex()).map(|h| h.auto_reconnect).unwrap_or(true);
         s.upsert_host(KnownHost {
             fingerprint: host_fp.to_hex(),
             name: host_info.name.clone(),
@@ -776,22 +659,11 @@ async fn run_connection(
         let s = lock(&inner.settings);
         (s.preset, s.preferred_codec)
     };
-    ch.send(&ClientMessage::SessionRequest {
-        display,
-        decoders,
-        preset,
-        preferred_codec,
+    ch.send(&ClientMessage::SessionRequest { display, decoders, preset, preferred_codec }).await?;
+    let mut stream = expect(&mut ch, Duration::from_secs(30), "session setup", |m| match m {
+        HostMessage::SessionAccepted { stream } => Some(stream),
+        _ => None,
     })
-    .await?;
-    let mut stream = expect(
-        &mut ch,
-        Duration::from_secs(30),
-        "session setup",
-        |m| match m {
-            HostMessage::SessionAccepted { stream } => Some(stream),
-            _ => None,
-        },
-    )
     .await?;
     let offer = expect(&mut ch, STEP_TIMEOUT, "SDP offer", |m| match m {
         HostMessage::SdpOffer { sdp } => Some(sdp),
@@ -799,11 +671,7 @@ async fn run_connection(
     })
     .await?;
     let (mut media, answer) = accept_offer(
-        ReceiverConfig {
-            codec: stream.codec,
-            interfaces: inner.interfaces.clone(),
-            host_hint: Some(addr.ip()),
-        },
+        ReceiverConfig { codec: stream.codec, interfaces: inner.interfaces.clone(), host_hint: Some(addr.ip()) },
         &offer,
     )
     .await?;
@@ -814,11 +682,7 @@ async fn run_connection(
     let (session_tx, mut session_rx) = mpsc::unbounded_channel();
     *lock(&inner.session_tx) = Some(session_tx);
     let (worker_err_tx, mut worker_errors) = mpsc::unbounded_channel();
-    let mut worker = DecodeWorker::spawn(
-        inner.platform.clone(),
-        stream.clone(),
-        worker_err_tx.clone(),
-    );
+    let mut worker = DecodeWorker::spawn(inner.platform.clone(), stream.clone(), worker_err_tx.clone());
 
     let mut ping = tokio::time::interval(PING_INTERVAL);
     let mut last_rx = Instant::now();
@@ -1010,11 +874,7 @@ impl DecodeWorker {
                 }
             })
             .expect("spawn decode thread");
-        DecodeWorker {
-            tx: Some(tx),
-            need_keyframe,
-            stats,
-        }
+        DecodeWorker { tx: Some(tx), need_keyframe, stats }
     }
 
     /// Returns false if the frame was dropped because the decoder is behind.

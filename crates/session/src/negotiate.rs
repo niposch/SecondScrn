@@ -3,9 +3,7 @@
 //! Both sides report capabilities they have *verified* by instantiating the
 //! codec (not just by seeing it listed). The host picks the best pair.
 
-use secondscrn_protocol::{
-    Codec, CodecCapability, ColorInfo, DisplayRequest, QualityPreset, StreamConfig,
-};
+use secondscrn_protocol::{Codec, CodecCapability, ColorInfo, DisplayRequest, QualityPreset, StreamConfig};
 
 use crate::adapt::BitratePolicy;
 
@@ -36,10 +34,7 @@ pub enum NegotiationError {
 
 fn fits(cap: &CodecCapability, w: u32, h: u32) -> bool {
     // Decoders usually accept either orientation of their maximum size.
-    let (cap_long, cap_short) = (
-        cap.max_width.max(cap.max_height),
-        cap.max_width.min(cap.max_height),
-    );
+    let (cap_long, cap_short) = (cap.max_width.max(cap.max_height), cap.max_width.min(cap.max_height));
     w.max(h) <= cap_long && w.min(h) <= cap_short
 }
 
@@ -68,22 +63,10 @@ pub fn negotiate(input: &NegotiationInput<'_>) -> Result<StreamConfig, Negotiati
 
     let mut best: Option<((u8, usize), &CodecCapability, &CodecCapability)> = None;
     for (i, codec) in order.iter().enumerate() {
-        for enc in input
-            .encoders
-            .iter()
-            .filter(|e| e.codec == *codec && fits(e, w, h))
-        {
-            for dec in input
-                .decoders
-                .iter()
-                .filter(|d| d.codec == *codec && fits(d, w, h))
-            {
+        for enc in input.encoders.iter().filter(|e| e.codec == *codec && fits(e, w, h)) {
+            for dec in input.decoders.iter().filter(|d| d.codec == *codec && fits(d, w, h)) {
                 // A forced codec wins over the hardware preference.
-                let s = if input.forced_codec == Some(*codec) {
-                    (0, 0)
-                } else {
-                    score(i, enc, dec)
-                };
+                let s = if input.forced_codec == Some(*codec) { (0, 0) } else { score(i, enc, dec) };
                 if best.as_ref().is_none_or(|(b, _, _)| s < *b) {
                     best = Some((s, enc, dec));
                 }
@@ -92,17 +75,12 @@ pub fn negotiate(input: &NegotiationInput<'_>) -> Result<StreamConfig, Negotiati
     }
     let (_, enc, dec) = best.ok_or(NegotiationError::NoCommonCodec(w, h))?;
 
-    let max_fps = [
-        input.display.refresh_hz.max(1),
-        enc.max_fps,
-        dec.max_fps,
-        input.host_max_fps,
-        input.preset.fps_cap(),
-    ]
-    .into_iter()
-    .filter(|v| *v > 0)
-    .min()
-    .unwrap_or(60);
+    let max_fps =
+        [input.display.refresh_hz.max(1), enc.max_fps, dec.max_fps, input.host_max_fps, input.preset.fps_cap()]
+            .into_iter()
+            .filter(|v| *v > 0)
+            .min()
+            .unwrap_or(60);
     let policy = BitratePolicy::for_stream(enc.codec, w, h, max_fps, input.preset, None);
 
     Ok(StreamConfig {
@@ -146,20 +124,10 @@ mod tests {
     }
 
     fn display(w: u32, h: u32) -> DisplayRequest {
-        DisplayRequest {
-            width: w,
-            height: h,
-            refresh_hz: 60,
-            dpi: 260,
-            orientation: Orientation::Landscape,
-        }
+        DisplayRequest { width: w, height: h, refresh_hz: 60, dpi: 260, orientation: Orientation::Landscape }
     }
 
-    fn input<'a>(
-        enc: &'a [CodecCapability],
-        dec: &'a [CodecCapability],
-        d: DisplayRequest,
-    ) -> NegotiationInput<'a> {
+    fn input<'a>(enc: &'a [CodecCapability], dec: &'a [CodecCapability], d: DisplayRequest) -> NegotiationInput<'a> {
         NegotiationInput {
             encoders: enc,
             decoders: dec,
@@ -175,15 +143,8 @@ mod tests {
 
     #[test]
     fn prefers_hevc_when_both_have_hardware() {
-        let enc = [
-            cap(Codec::H264, true, BIG, 60),
-            cap(Codec::H265, true, BIG, 60),
-            cap(Codec::Av1, true, BIG, 60),
-        ];
-        let dec = [
-            cap(Codec::H264, true, BIG, 60),
-            cap(Codec::H265, true, BIG, 60),
-        ];
+        let enc = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, true, BIG, 60), cap(Codec::Av1, true, BIG, 60)];
+        let dec = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, true, BIG, 60)];
         let s = negotiate(&input(&enc, &dec, display(2560, 1600))).unwrap();
         assert_eq!(s.codec, Codec::H265);
         assert_eq!((s.width, s.height, s.max_fps), (2560, 1600, 60));
@@ -191,58 +152,25 @@ mod tests {
 
     #[test]
     fn hardware_decoder_beats_codec_order() {
-        let enc = [
-            cap(Codec::H264, true, BIG, 60),
-            cap(Codec::H265, true, BIG, 60),
-        ];
-        let dec = [
-            cap(Codec::H264, true, BIG, 60),
-            cap(Codec::H265, false, BIG, 60),
-        ];
-        assert_eq!(
-            negotiate(&input(&enc, &dec, display(1920, 1200)))
-                .unwrap()
-                .codec,
-            Codec::H264
-        );
+        let enc = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, true, BIG, 60)];
+        let dec = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, false, BIG, 60)];
+        assert_eq!(negotiate(&input(&enc, &dec, display(1920, 1200))).unwrap().codec, Codec::H264);
     }
 
     #[test]
     fn resolution_limits_are_respected_in_either_orientation() {
-        let enc = [
-            cap(Codec::H264, true, BIG, 60),
-            cap(Codec::H265, true, BIG, 60),
-        ];
-        let dec = [
-            cap(Codec::H264, true, BIG, 60),
-            cap(Codec::H265, true, (1920, 1080), 60),
-        ];
+        let enc = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, true, BIG, 60)];
+        let dec = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, true, (1920, 1080), 60)];
         // Portrait 1080x1920 fits a 1920x1080 decoder.
-        assert_eq!(
-            negotiate(&input(&enc, &dec, display(1080, 1920)))
-                .unwrap()
-                .codec,
-            Codec::H265
-        );
+        assert_eq!(negotiate(&input(&enc, &dec, display(1080, 1920))).unwrap().codec, Codec::H265);
         // 2560x1600 does not; fall back to H.264.
-        assert_eq!(
-            negotiate(&input(&enc, &dec, display(2560, 1600)))
-                .unwrap()
-                .codec,
-            Codec::H264
-        );
+        assert_eq!(negotiate(&input(&enc, &dec, display(2560, 1600))).unwrap().codec, Codec::H264);
     }
 
     #[test]
     fn forced_codec_wins_and_missing_codec_fails() {
-        let enc = [
-            cap(Codec::H264, true, BIG, 60),
-            cap(Codec::H265, true, BIG, 60),
-        ];
-        let dec = [
-            cap(Codec::H264, true, BIG, 60),
-            cap(Codec::H265, true, BIG, 60),
-        ];
+        let enc = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, true, BIG, 60)];
+        let dec = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, true, BIG, 60)];
         let mut i = input(&enc, &dec, display(1920, 1080));
         i.forced_codec = Some(Codec::H264);
         assert_eq!(negotiate(&i).unwrap().codec, Codec::H264);
@@ -252,10 +180,7 @@ mod tests {
             negotiate(&input(&enc, &dec_av1, display(1920, 1080))),
             Err(NegotiationError::NoCommonCodec(1920, 1080))
         );
-        assert_eq!(
-            negotiate(&input(&[], &dec, display(1920, 1080))),
-            Err(NegotiationError::NoEncoder)
-        );
+        assert_eq!(negotiate(&input(&[], &dec, display(1920, 1080))), Err(NegotiationError::NoEncoder));
     }
 
     #[test]

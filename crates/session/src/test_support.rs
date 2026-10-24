@@ -6,9 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use secondscrn_protocol::{
-    Codec, CodecCapability, DeviceInfo, DisplayRequest, InputEvent, StreamConfig,
-};
+use secondscrn_protocol::{Codec, CodecCapability, DeviceInfo, DisplayRequest, InputEvent, StreamConfig};
 use secondscrn_transport::{EncodedFrame, ReceivedFrame};
 
 use crate::platform::*;
@@ -34,8 +32,7 @@ pub fn synthetic_frame(codec: Codec, index: u64, keyframe: bool) -> Vec<u8> {
         Codec::H264 => {
             if keyframe {
                 f.extend_from_slice(&[
-                    0, 0, 0, 1, 0x67, 0x64, 0, 0x28, 0, 0, 0, 1, 0x68, 0xee, 0x3c, 0x80, 0, 0, 0,
-                    1, 0x65,
+                    0, 0, 0, 1, 0x67, 0x64, 0, 0x28, 0, 0, 0, 1, 0x68, 0xee, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
                 ]);
             } else {
                 f.extend_from_slice(&[0, 0, 0, 1, 0x41]);
@@ -83,10 +80,7 @@ pub struct FakeHostPlatform {
 
 impl Default for FakeHostPlatform {
     fn default() -> Self {
-        FakeHostPlatform {
-            state: Arc::default(),
-            fps: 60,
-        }
+        FakeHostPlatform { state: Arc::default(), fps: 60 }
     }
 }
 
@@ -127,11 +121,7 @@ impl VideoPipeline for FakePipeline {
         *self.state.last_target.lock().unwrap() = Some((bitrate_bps, max_fps));
     }
     fn stats(&self) -> PipelineStats {
-        PipelineStats {
-            encode_fps: 60.0,
-            capture_fps: 60.0,
-            ..Default::default()
-        }
+        PipelineStats { encode_fps: 60.0, capture_fps: 60.0, ..Default::default() }
     }
 }
 
@@ -148,11 +138,7 @@ impl HostPlatform for FakeHostPlatform {
     fn driver_status(&self) -> DriverStatus {
         DriverStatus::NotApplicable
     }
-    fn acquire_display(
-        &self,
-        r: &DisplayRequest,
-        _linger: Duration,
-    ) -> Result<Box<dyn DisplayLease>, PlatformError> {
+    fn acquire_display(&self, r: &DisplayRequest, _linger: Duration) -> Result<Box<dyn DisplayLease>, PlatformError> {
         self.state.displays_acquired.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(FakeLease {
             info: DisplayInfo {
@@ -182,11 +168,7 @@ impl HostPlatform for FakeHostPlatform {
             while !s.load(Ordering::SeqCst) {
                 let key = k.swap(false, Ordering::SeqCst);
                 let data = synthetic_frame(codec, i, key);
-                if !sink.on_frame(EncodedFrame {
-                    data: Arc::from(data),
-                    capture_time: Instant::now(),
-                    keyframe: key,
-                }) {
+                if !sink.on_frame(EncodedFrame { data: Arc::from(data), capture_time: Instant::now(), keyframe: key }) {
                     k.store(true, Ordering::SeqCst);
                 }
                 st.frames_produced.fetch_add(1, Ordering::SeqCst);
@@ -194,11 +176,7 @@ impl HostPlatform for FakeHostPlatform {
                 std::thread::sleep(interval);
             }
         });
-        Ok(Box::new(FakePipeline {
-            stop,
-            keyframe,
-            state: self.state.clone(),
-        }))
+        Ok(Box::new(FakePipeline { stop, keyframe, state: self.state.clone() }))
     }
     fn inject_input(&self, _d: &DisplayInfo, e: &InputEvent) -> Result<(), PlatformError> {
         self.state.inputs.lock().unwrap().push(*e);
@@ -242,11 +220,7 @@ impl VideoDecoder for FakeDecoder {
 impl ClientPlatform for FakeClientPlatform {
     fn device_info(&self) -> DeviceInfo {
         DeviceInfo {
-            name: if self.name.is_empty() {
-                "Test Tablet".into()
-            } else {
-                self.name.clone()
-            },
+            name: if self.name.is_empty() { "Test Tablet".into() } else { self.name.clone() },
             model: "Fake".into(),
             app_version: "test".into(),
         }
@@ -256,9 +230,6 @@ impl ClientPlatform for FakeClientPlatform {
     }
     fn create_decoder(&self, _c: &StreamConfig) -> Result<Box<dyn VideoDecoder>, PlatformError> {
         self.state.decoders_created.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(FakeDecoder {
-            state: self.state.clone(),
-            stats: DecoderStats::default(),
-        }))
+        Ok(Box::new(FakeDecoder { state: self.state.clone(), stats: DecoderStats::default() }))
     }
 }

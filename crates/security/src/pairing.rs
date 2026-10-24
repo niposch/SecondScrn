@@ -30,10 +30,7 @@ pub fn generate_pin() -> String {
 
 /// Normalises user input ("123 456", "123-456") to digits.
 pub fn normalize_pin(input: &str) -> Option<String> {
-    let digits: String = input
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '-')
-        .collect();
+    let digits: String = input.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
     (digits.len() == PIN_DIGITS && digits.chars().all(|c| c.is_ascii_digit())).then_some(digits)
 }
 
@@ -74,16 +71,9 @@ impl ClientPairing {
     /// Processes the host's `PairChallenge`. On success returns the MAC to
     /// send in `PairConfirm`. Failure means the PIN was wrong or the channel
     /// is being intercepted.
-    pub fn finish(
-        self,
-        host_msg: &[u8],
-        host_mac: &[u8],
-        exporter: &[u8],
-    ) -> Result<Vec<u8>, SecurityError> {
+    pub fn finish(self, host_msg: &[u8], host_mac: &[u8], exporter: &[u8]) -> Result<Vec<u8>, SecurityError> {
         let key = Zeroizing::new(
-            self.spake
-                .finish(host_msg)
-                .map_err(|_| SecurityError::Pairing("malformed SPAKE2 message"))?,
+            self.spake.finish(host_msg).map_err(|_| SecurityError::Pairing("malformed SPAKE2 message"))?,
         );
         if !verify_mac(&key, HOST_CONFIRM, exporter, host_mac) {
             return Err(SecurityError::Pairing("PIN mismatch"));
@@ -110,20 +100,10 @@ impl HostPairing {
     ) -> Result<(Self, Vec<u8>, Vec<u8>), SecurityError> {
         let (a, b) = spake_ids(host, client);
         let (spake, msg) = Spake2::<Ed25519Group>::start_a(&Password::new(pin.as_bytes()), &a, &b);
-        let key = Zeroizing::new(
-            spake
-                .finish(client_msg)
-                .map_err(|_| SecurityError::Pairing("malformed SPAKE2 message"))?,
-        );
+        let key =
+            Zeroizing::new(spake.finish(client_msg).map_err(|_| SecurityError::Pairing("malformed SPAKE2 message"))?);
         let mac = confirm_mac(&key, HOST_CONFIRM, exporter);
-        Ok((
-            HostPairing {
-                key,
-                exporter: exporter.to_vec(),
-            },
-            msg,
-            mac,
-        ))
+        Ok((HostPairing { key, exporter: exporter.to_vec() }, msg, mac))
     }
 
     /// Checks the client's `PairConfirm`. Only after this succeeds may the
@@ -145,15 +125,9 @@ mod tests {
     const CLIENT: Fingerprint = Fingerprint([2; 32]);
     const EXPORTER: [u8; 32] = [7; 32];
 
-    fn run(
-        client_pin: &str,
-        host_pin: &str,
-        client_exp: &[u8],
-        host_exp: &[u8],
-    ) -> Result<(), SecurityError> {
+    fn run(client_pin: &str, host_pin: &str, client_exp: &[u8], host_exp: &[u8]) -> Result<(), SecurityError> {
         let (client, client_msg) = ClientPairing::start(client_pin, HOST, CLIENT);
-        let (host, host_msg, host_mac) =
-            HostPairing::respond(host_pin, HOST, CLIENT, &client_msg, host_exp)?;
+        let (host, host_msg, host_mac) = HostPairing::respond(host_pin, HOST, CLIENT, &client_msg, host_exp)?;
         let client_mac = client.finish(&host_msg, &host_mac, client_exp)?;
         host.verify(&client_mac)
     }
@@ -178,16 +152,14 @@ mod tests {
     fn identities_are_bound() {
         let (client, client_msg) = ClientPairing::start("123456", HOST, CLIENT);
         let (_, host_msg, host_mac) =
-            HostPairing::respond("123456", HOST, Fingerprint([3; 32]), &client_msg, &EXPORTER)
-                .unwrap();
+            HostPairing::respond("123456", HOST, Fingerprint([3; 32]), &client_msg, &EXPORTER).unwrap();
         assert!(client.finish(&host_msg, &host_mac, &EXPORTER).is_err());
     }
 
     #[test]
     fn forged_client_confirmation_is_rejected() {
         let (_, client_msg) = ClientPairing::start("123456", HOST, CLIENT);
-        let (host, _, host_mac) =
-            HostPairing::respond("123456", HOST, CLIENT, &client_msg, &EXPORTER).unwrap();
+        let (host, _, host_mac) = HostPairing::respond("123456", HOST, CLIENT, &client_msg, &EXPORTER).unwrap();
         // Replaying the host's own MAC must not be accepted as the client's.
         assert!(host.verify(&host_mac).is_err());
         assert!(host.verify(&[0; 32]).is_err());

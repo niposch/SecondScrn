@@ -54,22 +54,14 @@ impl BitratePolicy {
             Codec::H264 => 1.4,
             Codec::H265 | Codec::Av1 => 1.0,
         };
-        let mut ceiling = ((pixel_rate * bpp * codec_factor) as u64)
-            .clamp(ABSOLUTE_MIN_BPS * 2, ABSOLUTE_MAX_BPS);
+        let mut ceiling = ((pixel_rate * bpp * codec_factor) as u64).clamp(ABSOLUTE_MIN_BPS * 2, ABSOLUTE_MAX_BPS);
         if let Some(max) = user_max_bps.filter(|m| *m > 0) {
             ceiling = ceiling.min(max.max(ABSOLUTE_MIN_BPS));
         }
-        let floor = ((ceiling as f64 * floor_ratio) as u64)
-            .max(ABSOLUTE_MIN_BPS)
-            .min(ceiling);
+        let floor = ((ceiling as f64 * floor_ratio) as u64).max(ABSOLUTE_MIN_BPS).min(ceiling);
         // Start conservatively; BWE ramps up within a few seconds on a LAN.
         let initial = (ceiling / 2).clamp(floor, 12_000_000.max(floor));
-        BitratePolicy {
-            floor,
-            ceiling,
-            initial,
-            max_fps: fps,
-        }
+        BitratePolicy { floor, ceiling, initial, max_fps: fps }
     }
 }
 
@@ -90,10 +82,7 @@ impl BitrateController {
     pub fn new(policy: BitratePolicy) -> Self {
         BitrateController {
             policy,
-            current: EncoderTarget {
-                bitrate_bps: policy.initial,
-                fps: policy.max_fps,
-            },
+            current: EncoderTarget { bitrate_bps: policy.initial, fps: policy.max_fps },
             last_increase: None,
         }
     }
@@ -111,11 +100,7 @@ impl BitrateController {
         self.policy = policy;
         let target = EncoderTarget {
             bitrate_bps: self.current.bitrate_bps.clamp(policy.floor, policy.ceiling),
-            fps: self
-                .current
-                .fps
-                .min(policy.max_fps)
-                .max(MIN_FPS.min(policy.max_fps)),
+            fps: self.current.fps.min(policy.max_fps).max(MIN_FPS.min(policy.max_fps)),
         };
         self.apply(target)
     }
@@ -140,34 +125,25 @@ impl BitrateController {
             ((p.max_fps as f64 * ratio).round() as u32).clamp(MIN_FPS.min(p.max_fps), p.max_fps)
         };
         let fps_scale = fps as f64 / p.max_fps as f64;
-        let bitrate = usable
-            .clamp((p.floor as f64 * fps_scale) as u64, p.ceiling)
-            .max(ABSOLUTE_MIN_BPS / 2);
+        let bitrate = usable.clamp((p.floor as f64 * fps_scale) as u64, p.ceiling).max(ABSOLUTE_MIN_BPS / 2);
 
         let cur = self.current;
         let increasing = bitrate > cur.bitrate_bps || fps > cur.fps;
         if increasing {
-            let significant =
-                bitrate as f64 > cur.bitrate_bps as f64 * (1.0 + MIN_CHANGE_RATIO) || fps > cur.fps;
-            let rate_limited = self
-                .last_increase
-                .is_some_and(|t| now.duration_since(t) < MIN_INCREASE_INTERVAL);
+            let significant = bitrate as f64 > cur.bitrate_bps as f64 * (1.0 + MIN_CHANGE_RATIO) || fps > cur.fps;
+            let rate_limited = self.last_increase.is_some_and(|t| now.duration_since(t) < MIN_INCREASE_INTERVAL);
             if !significant || rate_limited {
                 return None;
             }
             self.last_increase = Some(now);
         } else {
-            let significant = (bitrate as f64)
-                < cur.bitrate_bps as f64 * (1.0 - MIN_CHANGE_RATIO / 2.0)
-                || fps < cur.fps;
+            let significant =
+                (bitrate as f64) < cur.bitrate_bps as f64 * (1.0 - MIN_CHANGE_RATIO / 2.0) || fps < cur.fps;
             if !significant {
                 return None;
             }
         }
-        self.apply(EncoderTarget {
-            bitrate_bps: bitrate,
-            fps,
-        })
+        self.apply(EncoderTarget { bitrate_bps: bitrate, fps })
     }
 
     fn apply(&mut self, target: EncoderTarget) -> Option<EncoderTarget> {
@@ -184,41 +160,21 @@ mod tests {
     use super::*;
 
     fn controller() -> BitrateController {
-        BitrateController::new(BitratePolicy::for_stream(
-            Codec::H265,
-            2560,
-            1600,
-            60,
-            QualityPreset::Automatic,
-            None,
-        ))
+        BitrateController::new(BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Automatic, None))
     }
 
     #[test]
     fn policy_scales_with_resolution_preset_and_codec() {
-        let hd =
-            BitratePolicy::for_stream(Codec::H265, 1920, 1080, 60, QualityPreset::Balanced, None);
-        let qhd =
-            BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Balanced, None);
-        let sharp =
-            BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Sharp, None);
-        let h264 =
-            BitratePolicy::for_stream(Codec::H264, 2560, 1600, 60, QualityPreset::Balanced, None);
-        assert!(
-            hd.ceiling < qhd.ceiling && qhd.ceiling < sharp.ceiling && qhd.ceiling < h264.ceiling
-        );
+        let hd = BitratePolicy::for_stream(Codec::H265, 1920, 1080, 60, QualityPreset::Balanced, None);
+        let qhd = BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Balanced, None);
+        let sharp = BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Sharp, None);
+        let h264 = BitratePolicy::for_stream(Codec::H264, 2560, 1600, 60, QualityPreset::Balanced, None);
+        assert!(hd.ceiling < qhd.ceiling && qhd.ceiling < sharp.ceiling && qhd.ceiling < h264.ceiling);
         assert!(sharp.floor > qhd.floor);
         for p in [hd, qhd, sharp, h264] {
             assert!(p.floor <= p.initial && p.initial <= p.ceiling, "{p:?}");
         }
-        let capped = BitratePolicy::for_stream(
-            Codec::H265,
-            2560,
-            1600,
-            60,
-            QualityPreset::Sharp,
-            Some(10_000_000),
-        );
+        let capped = BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Sharp, Some(10_000_000));
         assert_eq!(capped.ceiling, 10_000_000);
     }
 
@@ -229,27 +185,12 @@ mod tests {
         let low = c.on_estimate(10_000_000, t0).expect("drop applies");
         assert_eq!(low.bitrate_bps, 8_500_000);
         // Increase allowed once...
-        assert!(
-            c.on_estimate(30_000_000, t0 + Duration::from_millis(100))
-                .is_some()
-        );
+        assert!(c.on_estimate(30_000_000, t0 + Duration::from_millis(100)).is_some());
         // ...but not again within the interval.
-        assert!(
-            c.on_estimate(40_000_000, t0 + Duration::from_millis(500))
-                .is_none()
-        );
-        assert!(
-            c.on_estimate(40_000_000, t0 + Duration::from_secs(3))
-                .is_some()
-        );
+        assert!(c.on_estimate(40_000_000, t0 + Duration::from_millis(500)).is_none());
+        assert!(c.on_estimate(40_000_000, t0 + Duration::from_secs(3)).is_some());
         // Another drop is immediate.
-        assert!(
-            c.on_estimate(
-                5_000_000,
-                t0 + Duration::from_secs(3) + Duration::from_millis(10)
-            )
-            .is_some()
-        );
+        assert!(c.on_estimate(5_000_000, t0 + Duration::from_secs(3) + Duration::from_millis(10)).is_some());
     }
 
     #[test]
@@ -257,14 +198,8 @@ mod tests {
         let mut c = controller();
         let t0 = Instant::now();
         c.on_estimate(20_000_000, t0);
-        assert!(
-            c.on_estimate(20_500_000, t0 + Duration::from_secs(10))
-                .is_none()
-        );
-        assert!(
-            c.on_estimate(19_800_000, t0 + Duration::from_secs(10))
-                .is_none()
-        );
+        assert!(c.on_estimate(20_500_000, t0 + Duration::from_secs(10)).is_none());
+        assert!(c.on_estimate(19_800_000, t0 + Duration::from_secs(10)).is_none());
     }
 
     #[test]
@@ -276,14 +211,9 @@ mod tests {
         // Per-frame bits stay close to the floor's per-frame budget.
         let per_frame = t.bitrate_bps / t.fps as u64;
         let floor_per_frame = floor / 60;
-        assert!(
-            per_frame * 10 >= floor_per_frame * 8,
-            "{per_frame} vs {floor_per_frame}"
-        );
+        assert!(per_frame * 10 >= floor_per_frame * 8, "{per_frame} vs {floor_per_frame}");
 
-        let t2 = c
-            .on_estimate(floor * 4, Instant::now() + Duration::from_secs(5))
-            .unwrap();
+        let t2 = c.on_estimate(floor * 4, Instant::now() + Duration::from_secs(5)).unwrap();
         assert_eq!(t2.fps, 60);
     }
 
@@ -298,14 +228,7 @@ mod tests {
     fn preset_change_reclamps() {
         let mut c = controller();
         c.on_estimate(100_000_000, Instant::now());
-        let low = BitratePolicy::for_stream(
-            Codec::H265,
-            2560,
-            1600,
-            30,
-            QualityPreset::LowBandwidth,
-            None,
-        );
+        let low = BitratePolicy::for_stream(Codec::H265, 2560, 1600, 30, QualityPreset::LowBandwidth, None);
         let t = c.set_policy(low).unwrap();
         assert_eq!(t.bitrate_bps, low.ceiling);
         assert_eq!(t.fps, 30);
