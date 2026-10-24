@@ -18,11 +18,23 @@ pub mod convert;
 #[cfg(windows)]
 pub mod d3d;
 #[cfg(windows)]
+pub mod display;
+#[cfg(windows)]
+pub mod dpapi;
+#[cfg(windows)]
 pub mod encoder;
+#[cfg(windows)]
+pub mod input;
 #[cfg(windows)]
 pub mod pipeline;
 #[cfg(windows)]
+pub mod platform;
+#[cfg(windows)]
 mod serve;
+#[cfg(windows)]
+pub mod vdd;
+#[cfg(windows)]
+pub mod virtual_display;
 
 /// Makes desktop coordinates physical pixels on every monitor. Must run
 /// before any window or monitor API use.
@@ -32,4 +44,16 @@ pub fn init_dpi_awareness() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
+}
+
+/// `%LOCALAPPDATA%\SecondScrn` — identity, pairings, settings, logs.
+/// Velopack installs the app elsewhere, so this survives updates.
+#[cfg(windows)]
+pub fn default_data_dir() -> std::path::PathBuf {
+    std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("SecondScrn")
+}
+
+#[cfg(windows)]
+pub fn computer_name() -> String {
+    std::env::var("COMPUTERNAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "Windows PC".into())
 }

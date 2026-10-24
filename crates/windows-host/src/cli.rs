@@ -88,6 +88,44 @@ pub fn main() -> Result<()> {
             let n = pipeline::record(monitor, config, desc, secs.parse()?, &mut f)?;
             println!("wrote {n} frames to {file}");
         }
+        Some("vdd") => match args.get(1).map(String::as_str) {
+            Some("status") => {
+                println!("installation: {:?}", crate::vdd::installation());
+                println!("settings: {}", crate::vdd::settings_path().display());
+                println!("active: {:?}", crate::display::active_vdd()?);
+                if let Some(gdi) = crate::display::active_vdd()? {
+                    println!("mode: {:?}", crate::display::current_mode(&gdi));
+                    println!("modes: {:?}", crate::display::available_modes(&gdi));
+                }
+            }
+            Some("attach") => {
+                let spec = args.get(2).context("usage: vdd attach WIDTHxHEIGHT@HZ")?;
+                let (wh, hz) = spec.split_once('@').unwrap_or((spec, "60"));
+                let (w, h) = wh.split_once('x').context("WIDTHxHEIGHT")?;
+                let req = secondscrn_protocol::DisplayRequest {
+                    width: w.parse()?,
+                    height: h.parse()?,
+                    refresh_hz: hz.parse()?,
+                    dpi: 96,
+                    orientation: secondscrn_protocol::Orientation::Landscape,
+                };
+                let mgr = crate::virtual_display::VirtualDisplayManager::default();
+                let lease = mgr.acquire(&req, std::time::Duration::ZERO).map_err(|e| anyhow::anyhow!(e))?;
+                use secondscrn_session::platform::DisplayLease;
+                println!("attached: {:?}", lease.info());
+                std::mem::forget(lease); // keep attached after exit
+            }
+            Some("detach") => crate::display::detach_vdd()?,
+            _ => eprintln!("usage: vdd status | attach WxH@HZ | detach"),
+        },
+        Some("targets") => {
+            for (path, name, active) in crate::display::targets()? {
+                println!("{} {:24} {}", if active { "active  " } else { "inactive" }, name, path);
+            }
+        }
+        Some("activate") => {
+            crate::display::activate_target(args.get(1).context("usage: activate <device-path-substring>")?)?
+        }
         Some("serve") => crate::serve::run(&args[1..])?,
         _ => {
             eprintln!("commands: probe | monitors | record <device|primary> <codec> <seconds> <file> | serve");
