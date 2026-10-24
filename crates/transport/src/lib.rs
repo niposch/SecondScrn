@@ -599,17 +599,15 @@ impl Driver {
                 self.emit(TransportEvent::Connected { remote }).await;
             }
             Event::IceConnectionStateChange(state) => match state {
-                IceConnectionState::Disconnected => {
-                    if self.disconnected_since.is_none() {
+                IceConnectionState::Disconnected
+                    if self.disconnected_since.is_none() => {
                         self.disconnected_since = Some(Instant::now());
                         self.emit(TransportEvent::Interrupted).await;
                     }
-                }
-                IceConnectionState::Connected | IceConnectionState::Completed => {
-                    if self.disconnected_since.take().is_some() {
+                IceConnectionState::Connected | IceConnectionState::Completed
+                    if self.disconnected_since.take().is_some() => {
                         self.emit(TransportEvent::Resumed).await;
                     }
-                }
                 _ => {}
             },
             Event::MediaData(data) => {
@@ -623,7 +621,7 @@ impl Driver {
                     self.request_keyframe();
                 }
                 let frame = ReceivedFrame {
-                    data: data.data.into(),
+                    data: data.data,
                     rtp_time: data.time.numer(),
                     arrival: data.network_time,
                     keyframe,

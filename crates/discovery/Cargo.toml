@@ -1,0 +1,12 @@
+[package]
+name = "secondscrn-discovery"
+description = "mDNS/DNS-SD host announcement and discovery for SecondScrn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+secondscrn-protocol.workspace = true
+mdns-sd.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
