@@ -1,0 +1,17 @@
+[package]
+name = "secondscrn-transport"
+description = "WebRTC media transport (str0m) for SecondScrn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+secondscrn-protocol.workspace = true
+str0m.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+if-addrs.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
