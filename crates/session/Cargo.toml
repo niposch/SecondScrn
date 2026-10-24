@@ -1,0 +1,28 @@
+[package]
+name = "secondscrn-session"
+description = "Host and client session engines, negotiation, adaptation and settings for SecondScrn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+secondscrn-protocol.workspace = true
+secondscrn-security.workspace = true
+secondscrn-transport.workspace = true
+secondscrn-discovery.workspace = true
+secondscrn-diagnostics.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+test-support = []
+
+[dev-dependencies]
+tempfile = "3"
+tracing-subscriber.workspace = true
+secondscrn-session = { path = ".", features = ["test-support"] }

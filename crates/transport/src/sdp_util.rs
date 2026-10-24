@@ -21,7 +21,11 @@ pub fn candidate_ports(sdp: &str) -> Vec<u16> {
 
 /// Value of the first `a=mid:` line.
 pub fn first_mid(sdp: &str) -> Option<String> {
-    sdp.lines().find_map(|l| l.trim().strip_prefix("a=mid:").map(|m| m.trim().to_string()))
+    sdp.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("a=mid:")
+            .map(|m| m.trim().to_string())
+    })
 }
 
 #[cfg(test)]

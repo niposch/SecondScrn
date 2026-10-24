@@ -22,7 +22,10 @@ pub struct LogBuffer {
 
 impl LogBuffer {
     pub fn new(capacity: usize) -> Self {
-        LogBuffer { inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))), capacity }
+        LogBuffer {
+            inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            capacity,
+        }
     }
 
     pub fn push(&self, line: String) {
@@ -36,7 +39,10 @@ impl LogBuffer {
     /// The most recent `max` lines, oldest first.
     pub fn recent(&self, max: usize) -> Vec<String> {
         let q = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        q.iter().skip(q.len().saturating_sub(max)).cloned().collect()
+        q.iter()
+            .skip(q.len().saturating_sub(max))
+            .cloned()
+            .collect()
     }
 
     /// A tracing layer that records INFO and above into this buffer.
@@ -44,7 +50,10 @@ impl LogBuffer {
     where
         S: tracing::Subscriber,
     {
-        LogBufferLayer { buffer: self.clone(), started: Instant::now() }
+        LogBufferLayer {
+            buffer: self.clone(),
+            started: Instant::now(),
+        }
     }
 }
 
@@ -96,7 +105,12 @@ impl Default for RateCounter {
 
 impl RateCounter {
     pub fn new(now: Instant) -> Self {
-        RateCounter { window_start: now, count: 0, last_rate: 0.0, total: 0 }
+        RateCounter {
+            window_start: now,
+            count: 0,
+            last_rate: 0.0,
+            total: 0,
+        }
     }
 
     pub fn tick(&mut self, now: Instant) {
@@ -175,7 +189,9 @@ pub fn export_report(sections: Vec<(&str, serde_json::Value)>, logs: &[String]) 
     fn scrub(v: serde_json::Value) -> serde_json::Value {
         match v {
             serde_json::Value::String(s) => serde_json::Value::String(redact(&s)),
-            serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(scrub).collect()),
+            serde_json::Value::Array(a) => {
+                serde_json::Value::Array(a.into_iter().map(scrub).collect())
+            }
             serde_json::Value::Object(o) => {
                 serde_json::Value::Object(o.into_iter().map(|(k, v)| (k, scrub(v))).collect())
             }
@@ -187,7 +203,12 @@ pub fn export_report(sections: Vec<(&str, serde_json::Value)>, logs: &[String]) 
     for (name, value) in sections {
         root.insert(name.to_string(), scrub(value));
     }
-    root.insert("logs".into(), logs.iter().map(|l| serde_json::Value::String(redact(l))).collect());
+    root.insert(
+        "logs".into(),
+        logs.iter()
+            .map(|l| serde_json::Value::String(redact(l)))
+            .collect(),
+    );
     serde_json::to_string_pretty(&serde_json::Value::Object(root)).expect("serialisable")
 }
 
@@ -232,7 +253,9 @@ mod tests {
     #[test]
     fn redaction_removes_secrets_but_keeps_context() {
         let fp = "a".repeat(64);
-        let s = format!("peer fingerprint={fp} pin=123456 rtt=12ms spake=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9w");
+        let s = format!(
+            "peer fingerprint={fp} pin=123456 rtt=12ms spake=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9w"
+        );
         let r = redact(&s);
         assert!(!r.contains(&fp));
         assert!(!r.contains("123456"));
@@ -243,7 +266,10 @@ mod tests {
     #[test]
     fn export_scrubs_nested_values() {
         let out = export_report(
-            vec![("peer", serde_json::json!({"fp": "b".repeat(64), "name": "Tab"}))],
+            vec![(
+                "peer",
+                serde_json::json!({"fp": "b".repeat(64), "name": "Tab"}),
+            )],
             &["pin: 654321".to_string()],
         );
         assert!(!out.contains(&"b".repeat(64)));

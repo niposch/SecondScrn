@@ -38,9 +38,14 @@ fn cert_of(identity: &Identity) -> Vec<CertificateDer<'static>> {
 }
 
 /// Server (host) configuration: requires a client certificate, accepts any.
-pub fn server_config(identity: &Identity, alpn: &[u8]) -> Result<rustls::ServerConfig, SecurityError> {
+pub fn server_config(
+    identity: &Identity,
+    alpn: &[u8],
+) -> Result<rustls::ServerConfig, SecurityError> {
     let provider = crypto_provider();
-    let verifier = Arc::new(AnyClientCert { algs: provider.signature_verification_algorithms });
+    let verifier = Arc::new(AnyClientCert {
+        algs: provider.signature_verification_algorithms,
+    });
     let mut cfg = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_client_cert_verifier(verifier)
@@ -57,7 +62,10 @@ pub fn client_config(
     alpn: &[u8],
 ) -> Result<rustls::ClientConfig, SecurityError> {
     let provider = crypto_provider();
-    let verifier = Arc::new(PinnedServerCert { pinned: pinned_host, algs: provider.signature_verification_algorithms });
+    let verifier = Arc::new(PinnedServerCert {
+        pinned: pinned_host,
+        algs: provider.signature_verification_algorithms,
+    });
     let mut cfg = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
@@ -74,7 +82,9 @@ pub fn server_name() -> ServerName<'static> {
 /// Fingerprint of the peer's end-entity certificate on an established
 /// connection (either side).
 pub fn peer_fingerprint(certs: Option<&[CertificateDer<'_>]>) -> Option<Fingerprint> {
-    certs.and_then(|c| c.first()).map(|c| Fingerprint::of_cert(c.as_ref()))
+    certs
+        .and_then(|c| c.first())
+        .map(|c| Fingerprint::of_cert(c.as_ref()))
 }
 
 #[derive(Debug)]
@@ -103,7 +113,9 @@ impl ClientCertVerifier for AnyClientCert {
         _cert: &CertificateDer<'_>,
         _dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Err(rustls::Error::PeerIncompatible(rustls::PeerIncompatible::Tls12NotOffered))
+        Err(rustls::Error::PeerIncompatible(
+            rustls::PeerIncompatible::Tls12NotOffered,
+        ))
     }
 
     fn verify_tls13_signature(
@@ -157,7 +169,9 @@ impl ServerCertVerifier for PinnedServerCert {
         _cert: &CertificateDer<'_>,
         _dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Err(rustls::Error::PeerIncompatible(rustls::PeerIncompatible::Tls12NotOffered))
+        Err(rustls::Error::PeerIncompatible(
+            rustls::PeerIncompatible::Tls12NotOffered,
+        ))
     }
 
     fn verify_tls13_signature(
@@ -187,8 +201,10 @@ mod tests {
         client: &Identity,
         pin: Option<Fingerprint>,
     ) -> Result<(Fingerprint, Fingerprint, [u8; 32], [u8; 32]), String> {
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config(host, ALPN).unwrap()));
-        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config(client, pin, ALPN).unwrap()));
+        let acceptor =
+            tokio_rustls::TlsAcceptor::from(Arc::new(server_config(host, ALPN).unwrap()));
+        let connector =
+            tokio_rustls::TlsConnector::from(Arc::new(client_config(client, pin, ALPN).unwrap()));
         let (a, b) = tokio::io::duplex(64 * 1024);
 
         let server = tokio::spawn(async move {
@@ -198,16 +214,21 @@ mod tests {
             let (_, conn) = s.get_ref();
             let fp = peer_fingerprint(conn.peer_certificates()).unwrap();
             let mut ekm = [0u8; 32];
-            conn.export_keying_material(&mut ekm, PAIRING_EXPORTER_LABEL, None).unwrap();
+            conn.export_keying_material(&mut ekm, PAIRING_EXPORTER_LABEL, None)
+                .unwrap();
             Ok::<_, String>((fp, ekm))
         });
 
-        let mut c = connector.connect(server_name(), b).await.map_err(|e| e.to_string())?;
+        let mut c = connector
+            .connect(server_name(), b)
+            .await
+            .map_err(|e| e.to_string())?;
         c.write_all(b"ping").await.map_err(|e| e.to_string())?;
         let (_, conn) = c.get_ref();
         let host_fp = peer_fingerprint(conn.peer_certificates()).unwrap();
         let mut ekm = [0u8; 32];
-        conn.export_keying_material(&mut ekm, PAIRING_EXPORTER_LABEL, None).unwrap();
+        conn.export_keying_material(&mut ekm, PAIRING_EXPORTER_LABEL, None)
+            .unwrap();
         let (client_fp, server_ekm) = server.await.unwrap()?;
         Ok((host_fp, client_fp, ekm, server_ekm))
     }
@@ -226,9 +247,17 @@ mod tests {
     async fn pinned_host_must_match() {
         let host = Identity::generate("host").unwrap();
         let client = Identity::generate("client").unwrap();
-        assert!(handshake(&host, &client, Some(host.fingerprint())).await.is_ok());
+        assert!(
+            handshake(&host, &client, Some(host.fingerprint()))
+                .await
+                .is_ok()
+        );
 
         let impostor = Identity::generate("impostor").unwrap();
-        assert!(handshake(&impostor, &client, Some(host.fingerprint())).await.is_err());
+        assert!(
+            handshake(&impostor, &client, Some(host.fingerprint()))
+                .await
+                .is_err()
+        );
     }
 }

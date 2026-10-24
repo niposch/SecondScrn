@@ -41,11 +41,19 @@ pub struct Announcer {
 }
 
 impl Announcer {
-    pub fn start(display_name: &str, fingerprint_hex: &str, port: u16) -> Result<Self, DiscoveryError> {
+    pub fn start(
+        display_name: &str,
+        fingerprint_hex: &str,
+        port: u16,
+    ) -> Result<Self, DiscoveryError> {
         let daemon = ServiceDaemon::new()?;
         // Instance names must be unique; the fingerprint prefix disambiguates
         // two PCs with the same name.
-        let instance = format!("{}-{}", sanitize(display_name), &fingerprint_hex[..8.min(fingerprint_hex.len())]);
+        let instance = format!(
+            "{}-{}",
+            sanitize(display_name),
+            &fingerprint_hex[..8.min(fingerprint_hex.len())]
+        );
         let hostname = format!("{}.local.", sanitize(display_name).to_lowercase());
         let props: HashMap<String, String> = [
             ("name".to_string(), display_name.to_string()),
@@ -53,7 +61,8 @@ impl Announcer {
             ("v".to_string(), PROTOCOL_VERSION.to_string()),
         ]
         .into();
-        let info = ServiceInfo::new(MDNS_SERVICE_TYPE, &instance, &hostname, "", port, props)?.enable_addr_auto();
+        let info = ServiceInfo::new(MDNS_SERVICE_TYPE, &instance, &hostname, "", port, props)?
+            .enable_addr_auto();
         let fullname = info.get_fullname().to_string();
         daemon.register(info)?;
         tracing::info!(%instance, port, "announcing host via mDNS");
@@ -71,7 +80,13 @@ impl Drop for Announcer {
 fn sanitize(name: &str) -> String {
     let s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .take(40)
         .collect();
     if s.is_empty() { "secondscrn".into() } else { s }
@@ -84,9 +99,19 @@ fn advert_from(info: &mdns_sd::ResolvedService) -> Option<HostAdvert> {
     if fp.len() != 64 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
-    let name = info.get_property_val_str("name").unwrap_or("Windows PC").to_string();
-    let version = info.get_property_val_str("v").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let mut addresses: Vec<IpAddr> = info.get_addresses().iter().map(|a| a.to_ip_addr()).collect();
+    let name = info
+        .get_property_val_str("name")
+        .unwrap_or("Windows PC")
+        .to_string();
+    let version = info
+        .get_property_val_str("v")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut addresses: Vec<IpAddr> = info
+        .get_addresses()
+        .iter()
+        .map(|a| a.to_ip_addr())
+        .collect();
     addresses.sort_by_key(|a| (!a.is_ipv4(), *a)); // prefer IPv4
     Some(HostAdvert {
         instance: info.get_fullname().to_string(),
@@ -129,7 +154,9 @@ impl Browser {
                         return Some(BrowseEvent::Found(ad));
                     }
                 }
-                ServiceEvent::ServiceRemoved(_, fullname) => return Some(BrowseEvent::Lost { instance: fullname }),
+                ServiceEvent::ServiceRemoved(_, fullname) => {
+                    return Some(BrowseEvent::Lost { instance: fullname });
+                }
                 _ => {}
             }
         }

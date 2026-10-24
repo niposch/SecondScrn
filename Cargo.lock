@@ -1297,6 +1297,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "secondscrn-session"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "secondscrn-diagnostics",
+ "secondscrn-discovery",
+ "secondscrn-protocol",
+ "secondscrn-security",
+ "secondscrn-session",
+ "secondscrn-transport",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "secondscrn-transport"
 version = "0.1.0"
 dependencies = [

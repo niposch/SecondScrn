@@ -32,12 +32,18 @@ pub struct TrustStore {
 }
 
 pub fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl TrustStore {
     pub fn in_memory() -> Self {
-        TrustStore { path: None, peers: BTreeMap::new() }
+        TrustStore {
+            path: None,
+            peers: BTreeMap::new(),
+        }
     }
 
     pub fn load(path: &Path) -> Result<Self, SecurityError> {
@@ -50,13 +56,22 @@ impl TrustStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e.into()),
         };
-        Ok(TrustStore { path: Some(path.to_path_buf()), peers })
+        Ok(TrustStore {
+            path: Some(path.to_path_buf()),
+            peers,
+        })
     }
 
     fn save(&self) -> Result<(), SecurityError> {
         if let Some(path) = &self.path {
-            let file = TrustFile { version: 1, peers: self.peers.values().cloned().collect() };
-            write_atomic(path, &serde_json::to_vec_pretty(&file).expect("serialisable"))?;
+            let file = TrustFile {
+                version: 1,
+                peers: self.peers.values().cloned().collect(),
+            };
+            write_atomic(
+                path,
+                &serde_json::to_vec_pretty(&file).expect("serialisable"),
+            )?;
         }
         Ok(())
     }
@@ -121,7 +136,13 @@ mod tests {
 
         let mut reloaded = TrustStore::load(&path).unwrap();
         assert!(reloaded.is_trusted(&Fingerprint([1; 32])));
-        assert!(reloaded.get(&Fingerprint([1; 32])).unwrap().last_seen.is_some());
+        assert!(
+            reloaded
+                .get(&Fingerprint([1; 32]))
+                .unwrap()
+                .last_seen
+                .is_some()
+        );
         assert!(reloaded.remove(&Fingerprint([2; 32])).unwrap());
         assert!(!reloaded.remove(&Fingerprint([2; 32])).unwrap());
 

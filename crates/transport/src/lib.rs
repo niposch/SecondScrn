@@ -66,13 +66,28 @@ pub struct InterfacePolicy {
 
 impl Default for InterfacePolicy {
     fn default() -> Self {
-        InterfacePolicy { include_loopback: true, only: Vec::new() }
+        InterfacePolicy {
+            include_loopback: true,
+            only: Vec::new(),
+        }
     }
+}
+
+/// Usable local IPv4 addresses (also shown in the UI for manual connection).
+pub fn local_addresses(include_loopback: bool) -> Vec<IpAddr> {
+    InterfacePolicy {
+        include_loopback,
+        only: Vec::new(),
+    }
+    .addresses()
 }
 
 impl InterfacePolicy {
     pub fn loopback_only() -> Self {
-        InterfacePolicy { include_loopback: true, only: vec![IpAddr::from([127, 0, 0, 1])] }
+        InterfacePolicy {
+            include_loopback: true,
+            only: vec![IpAddr::from([127, 0, 0, 1])],
+        }
     }
 
     fn addresses(&self) -> Vec<IpAddr> {
@@ -134,7 +149,9 @@ pub struct TransportStats {
 
 #[derive(Debug)]
 pub enum TransportEvent {
-    Connected { remote: Option<SocketAddr> },
+    Connected {
+        remote: Option<SocketAddr>,
+    },
     /// ICE lost connectivity. The transport keeps trying for a short grace
     /// period before emitting [`TransportEvent::Closed`].
     Interrupted,
@@ -147,39 +164,62 @@ pub enum TransportEvent {
     Frame(ReceivedFrame),
     Stats(TransportStats),
     /// Terminal. The handle is unusable afterwards.
-    Closed { reason: String },
+    Closed {
+        reason: String,
+    },
 }
 
 enum Command {
-    Frame(EncodedFrame),
     SetDesiredBitrate(u64),
     RequestKeyframe,
-    Shutdown,
 }
 
-/// Handle to a running media peer. Dropping it shuts the peer down.
-pub struct MediaHandle {
-    commands: mpsc::Sender<Command>,
-    pub events: mpsc::Receiver<TransportEvent>,
-    frames_dropped: Arc<std::sync::atomic::AtomicU64>,
+/// Cloneable, thread-safe handle the encoder uses to hand frames to the
+/// network task.
+#[derive(Clone)]
+pub struct FrameSender {
+    frames: mpsc::Sender<EncodedFrame>,
+    dropped: Arc<std::sync::atomic::AtomicU64>,
 }
 
-impl MediaHandle {
+impl FrameSender {
     /// Queues an encoded frame for sending. Never blocks: when the queue is
-    /// full the frame is dropped and `false` returned, and the caller should
+    /// full the frame is dropped and `false` returned, and the caller must
     /// force a keyframe so the receiver recovers.
     pub fn send_frame(&self, frame: EncodedFrame) -> bool {
-        match self.commands.try_send(Command::Frame(frame)) {
+        match self.frames.try_send(frame) {
             Ok(()) => true,
             Err(_) => {
-                self.frames_dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dropped
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 false
             }
         }
     }
 
     pub fn frames_dropped(&self) -> u64 {
-        self.frames_dropped.load(std::sync::atomic::Ordering::Relaxed)
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Handle to a running media peer. Dropping it shuts the peer down.
+pub struct MediaHandle {
+    commands: mpsc::Sender<Command>,
+    frames: FrameSender,
+    pub events: mpsc::Receiver<TransportEvent>,
+}
+
+impl MediaHandle {
+    pub fn send_frame(&self, frame: EncodedFrame) -> bool {
+        self.frames.send_frame(frame)
+    }
+
+    pub fn frame_sender(&self) -> FrameSender {
+        self.frames.clone()
+    }
+
+    pub fn frames_dropped(&self) -> u64 {
+        self.frames.frames_dropped()
     }
 
     /// Upper bound the bandwidth estimator should probe towards.
@@ -190,16 +230,6 @@ impl MediaHandle {
     /// Receiver: ask the sender for a keyframe (throttled internally).
     pub fn request_keyframe(&self) {
         let _ = self.commands.try_send(Command::RequestKeyframe);
-    }
-
-    pub fn shutdown(&self) {
-        let _ = self.commands.try_send(Command::Shutdown);
-    }
-}
-
-impl Drop for MediaHandle {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }
 
@@ -325,11 +355,19 @@ impl PendingSender {
 
     /// Applies the client's answer and starts the I/O task.
     pub fn accept_answer(mut self, answer_sdp: &str) -> Result<MediaHandle, TransportError> {
-        let answer = SdpAnswer::from_sdp_string(answer_sdp).map_err(|e| TransportError::Sdp(e.to_string()))?;
+        let answer = SdpAnswer::from_sdp_string(answer_sdp)
+            .map_err(|e| TransportError::Sdp(e.to_string()))?;
         self.rtc.sdp_api().accept_answer(self.pending, answer)?;
-        self.rtc.bwe().set_desired_bitrate(str0m::bwe::Bitrate::bps(self.max_bitrate_bps));
+        self.rtc
+            .bwe()
+            .set_desired_bitrate(str0m::bwe::Bitrate::bps(self.max_bitrate_bps));
         let codec = self.codec;
-        Ok(spawn_driver(self.rtc, self.sockets, self.mid, Role::Sender { codec, pt: None }))
+        Ok(spawn_driver(
+            self.rtc,
+            self.sockets,
+            self.mid,
+            Role::Sender { codec, pt: None },
+        ))
     }
 }
 
@@ -345,12 +383,16 @@ pub struct ReceiverConfig {
 
 /// Tablet side: accepts the host's offer and starts the I/O task. Returns the
 /// SDP answer to send back.
-pub async fn accept_offer(config: ReceiverConfig, offer_sdp: &str) -> Result<(MediaHandle, String), TransportError> {
+pub async fn accept_offer(
+    config: ReceiverConfig,
+    offer_sdp: &str,
+) -> Result<(MediaHandle, String), TransportError> {
     install_crypto();
     let sockets = bind_sockets(&config.interfaces).await?;
     let mut rtc = rtc_config(config.codec).build(Instant::now());
     add_candidates(&mut rtc, &sockets)?;
-    let offer = SdpOffer::from_sdp_string(offer_sdp).map_err(|e| TransportError::Sdp(e.to_string()))?;
+    let offer =
+        SdpOffer::from_sdp_string(offer_sdp).map_err(|e| TransportError::Sdp(e.to_string()))?;
     let answer = rtc.sdp_api().accept_offer(offer)?;
     if let Some(ip) = config.host_hint {
         for port in candidate_ports(offer_sdp) {
@@ -369,7 +411,10 @@ fn answer_mid(answer: &SdpAnswer) -> Option<Mid> {
 }
 
 enum Role {
-    Sender { codec: Codec, pt: Option<str0m::media::Pt> },
+    Sender {
+        codec: Codec,
+        pt: Option<str0m::media::Pt>,
+    },
     Receiver,
 }
 
@@ -380,7 +425,8 @@ struct Datagram {
 }
 
 fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> MediaHandle {
-    let (cmd_tx, cmd_rx) = mpsc::channel(FRAME_QUEUE);
+    let (cmd_tx, cmd_rx) = mpsc::channel(32);
+    let (frame_tx, frame_rx) = mpsc::channel(FRAME_QUEUE);
     let (evt_tx, evt_rx) = mpsc::channel(64);
     let sockets: Vec<Arc<UdpSocket>> = sockets.into_iter().map(Arc::new).collect();
     let (net_tx, net_rx) = mpsc::channel::<Datagram>(512);
@@ -398,7 +444,11 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
             loop {
                 match s.recv_from(&mut buf).await {
                     Ok((n, source)) => {
-                        let dg = Datagram { data: buf[..n].to_vec(), source, destination: local };
+                        let dg = Datagram {
+                            data: buf[..n].to_vec(),
+                            source,
+                            destination: local,
+                        };
                         if tx.send(dg).await.is_err() {
                             return;
                         }
@@ -430,14 +480,21 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
         first_frame_time: None,
     };
     tokio::spawn(async move {
-        let reason = driver.run(cmd_rx, net_rx).await;
+        let reason = driver.run(cmd_rx, frame_rx, net_rx).await;
         for r in readers {
             r.abort();
         }
         reason
     });
 
-    MediaHandle { commands: cmd_tx, events: evt_rx, frames_dropped: Default::default() }
+    MediaHandle {
+        commands: cmd_tx,
+        frames: FrameSender {
+            frames: frame_tx,
+            dropped: Default::default(),
+        },
+        events: evt_rx,
+    }
 }
 
 struct Driver {
@@ -455,7 +512,12 @@ struct Driver {
 }
 
 impl Driver {
-    async fn run(mut self, mut commands: mpsc::Receiver<Command>, mut net: mpsc::Receiver<Datagram>) {
+    async fn run(
+        mut self,
+        mut commands: mpsc::Receiver<Command>,
+        mut frames: mpsc::Receiver<EncodedFrame>,
+        mut net: mpsc::Receiver<Datagram>,
+    ) {
         let reason = loop {
             let timeout = match self.drain().await {
                 Ok(t) => t,
@@ -470,9 +532,11 @@ impl Driver {
             let input_result = tokio::select! {
                 biased;
                 cmd = commands.recv() => match cmd {
-                    None | Some(Command::Shutdown) => break "closed locally".to_string(),
+                    // The MediaHandle was dropped.
+                    None => break "closed locally".to_string(),
                     Some(cmd) => self.handle_command(cmd),
                 },
+                Some(frame) = frames.recv() => self.write_frame(frame),
                 dg = net.recv() => match dg {
                     None => break "network sockets closed".to_string(),
                     Some(dg) => self.handle_datagram(dg),
@@ -493,7 +557,12 @@ impl Driver {
         };
         let input = Input::Receive(
             Instant::now(),
-            Receive { proto: Protocol::Udp, source: dg.source, destination: dg.destination, contents },
+            Receive {
+                proto: Protocol::Udp,
+                source: dg.source,
+                destination: dg.destination,
+                contents,
+            },
         );
         if self.rtc.accepts(&input) {
             self.rtc.handle_input(input)?;
@@ -503,16 +572,16 @@ impl Driver {
 
     fn handle_command(&mut self, cmd: Command) -> Result<(), TransportError> {
         match cmd {
-            Command::Frame(frame) => self.write_frame(frame),
             Command::SetDesiredBitrate(bps) => {
-                self.rtc.bwe().set_desired_bitrate(str0m::bwe::Bitrate::bps(bps));
+                self.rtc
+                    .bwe()
+                    .set_desired_bitrate(str0m::bwe::Bitrate::bps(bps));
                 Ok(())
             }
             Command::RequestKeyframe => {
                 self.request_keyframe();
                 Ok(())
             }
-            Command::Shutdown => Ok(()),
         }
     }
 
@@ -540,7 +609,10 @@ impl Driver {
             }
         };
         let base = *self.first_frame_time.get_or_insert(frame.capture_time);
-        let micros = frame.capture_time.saturating_duration_since(base).as_micros() as u64;
+        let micros = frame
+            .capture_time
+            .saturating_duration_since(base)
+            .as_micros() as u64;
         let rtp_time = MediaTime::new(micros * 9 / 100, Frequency::NINETY_KHZ);
         writer.write(pt, frame.capture_time, rtp_time, frame.data)?;
         Ok(())
@@ -555,7 +627,9 @@ impl Driver {
             return;
         }
         if let Some(mut writer) = self.rtc.writer(self.mid)
-            && writer.request_keyframe(None, KeyframeRequestKind::Pli).is_ok()
+            && writer
+                .request_keyframe(None, KeyframeRequestKind::Pli)
+                .is_ok()
         {
             self.last_keyframe_request = Some(now);
         }
@@ -567,7 +641,11 @@ impl Driver {
             match self.rtc.poll_output()? {
                 Output::Timeout(t) => return Ok(t),
                 Output::Transmit(t) => {
-                    if let Some(sock) = self.sockets.iter().find(|s| s.local_addr().ok() == Some(t.source)) {
+                    if let Some(sock) = self
+                        .sockets
+                        .iter()
+                        .find(|s| s.local_addr().ok() == Some(t.source))
+                    {
                         // UDP send errors (e.g. no route) are transient; ICE handles failover.
                         let _ = sock.try_send_to(&t.contents, t.destination);
                     }
@@ -599,15 +677,15 @@ impl Driver {
                 self.emit(TransportEvent::Connected { remote }).await;
             }
             Event::IceConnectionStateChange(state) => match state {
-                IceConnectionState::Disconnected
-                    if self.disconnected_since.is_none() => {
-                        self.disconnected_since = Some(Instant::now());
-                        self.emit(TransportEvent::Interrupted).await;
-                    }
+                IceConnectionState::Disconnected if self.disconnected_since.is_none() => {
+                    self.disconnected_since = Some(Instant::now());
+                    self.emit(TransportEvent::Interrupted).await;
+                }
                 IceConnectionState::Connected | IceConnectionState::Completed
-                    if self.disconnected_since.take().is_some() => {
-                        self.emit(TransportEvent::Resumed).await;
-                    }
+                    if self.disconnected_since.take().is_some() =>
+                {
+                    self.emit(TransportEvent::Resumed).await;
+                }
                 _ => {}
             },
             Event::MediaData(data) => {

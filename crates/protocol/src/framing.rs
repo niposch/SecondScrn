@@ -59,7 +59,9 @@ mod io {
         let mut header = [0u8; 4];
         match r.read_exact(&mut header).await {
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Err(FrameError::Closed),
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(FrameError::Closed);
+            }
             Err(e) => return Err(e.into()),
         }
         let len = u32::from_be_bytes(header) as usize;
@@ -83,8 +85,12 @@ mod tests {
     #[tokio::test]
     async fn frames_roundtrip_over_a_stream() {
         let (mut a, mut b) = tokio::io::duplex(1024);
-        write_message(&mut a, &ClientMessage::Ping { nonce: 42 }).await.unwrap();
-        write_message(&mut a, &ClientMessage::Goodbye).await.unwrap();
+        write_message(&mut a, &ClientMessage::Ping { nonce: 42 })
+            .await
+            .unwrap();
+        write_message(&mut a, &ClientMessage::Goodbye)
+            .await
+            .unwrap();
         let m1: ClientMessage = read_message(&mut b).await.unwrap();
         let m2: ClientMessage = read_message(&mut b).await.unwrap();
         assert_eq!(m1, ClientMessage::Ping { nonce: 42 });
