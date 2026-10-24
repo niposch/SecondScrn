@@ -1,0 +1,379 @@
+//! Capture → convert → encode pipeline on a dedicated thread.
+//!
+//! Everything stays on the GPU: WGC hands us a BGRA texture, a shader writes
+//! NV12 into one of a few ring textures, and the hardware MFT encodes that
+//! texture. Only the compressed bitstream reaches the CPU.
+//!
+//! Frame policy for a desktop:
+//! * Frames are encoded only when the screen changes (WGC semantics), at most
+//!   `max_fps`. When the encoder is busy, only the newest frame is kept.
+//! * After the screen settles, the last frame is re-encoded twice so the
+//!   encoder can refine it (static text converges to full sharpness).
+//! * A keepalive frame every second keeps the decoder and statistics alive.
+
+use std::collections::VecDeque;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use secondscrn_diagnostics::{Ewma, RateCounter};
+use secondscrn_graphics::color::RgbToYuv;
+use secondscrn_protocol::StreamConfig;
+use secondscrn_session::platform::{PipelineSink, PipelineStats, PlatformError, PlatformErrorKind, VideoPipeline};
+use secondscrn_transport::EncodedFrame;
+
+use crate::capture::{MonitorCapture, MonitorInfo};
+use crate::convert::{Converter, Nv12Target};
+use crate::d3d;
+use crate::encoder::{Encoder, EncoderDescriptor, EncoderEvent, EncoderSettings};
+
+const RING: usize = 4;
+const REFRESH_DELAY: Duration = Duration::from_millis(120);
+const REFRESH_COUNT: u32 = 2;
+const KEEPALIVE: Duration = Duration::from_secs(1);
+
+enum Msg {
+    Frame,
+    Encoder(EncoderEvent),
+    SetTarget(u64, u32),
+    Keyframe,
+    Stop,
+}
+
+pub struct WindowsPipeline {
+    tx: mpsc::Sender<Msg>,
+    stats: Arc<Mutex<PipelineStats>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl VideoPipeline for WindowsPipeline {
+    fn request_keyframe(&self) {
+        let _ = self.tx.send(Msg::Keyframe);
+    }
+    fn set_target(&self, bitrate_bps: u64, max_fps: u32) {
+        let _ = self.tx.send(Msg::SetTarget(bitrate_bps, max_fps));
+    }
+    fn stats(&self) -> PipelineStats {
+        *self.stats.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Drop for WindowsPipeline {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Msg::Stop);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn err(kind: PlatformErrorKind, e: impl std::fmt::Display) -> PlatformError {
+    PlatformError::new(kind, e.to_string())
+}
+
+impl WindowsPipeline {
+    pub fn start(
+        monitor: MonitorInfo,
+        config: StreamConfig,
+        encoder: EncoderDescriptor,
+        sink: Box<dyn PipelineSink>,
+    ) -> Result<Self, PlatformError> {
+        let (tx, rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let stats = Arc::new(Mutex::new(PipelineStats::default()));
+        let (tx2, stats2) = (tx.clone(), stats.clone());
+        let thread = std::thread::Builder::new()
+            .name("secondscrn-pipeline".into())
+            .spawn(move || {
+                let mut worker = match Worker::new(monitor, config, &encoder, tx2, stats2) {
+                    Ok(w) => {
+                        let _ = ready_tx.send(Ok(()));
+                        w
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
+                if let Err(e) = worker.run(&rx, sink.as_ref()) {
+                    tracing::warn!(error = %e, "pipeline stopped");
+                    sink.on_error(e);
+                }
+            })
+            .map_err(|e| err(PlatformErrorKind::Other, e))?;
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(WindowsPipeline { tx, stats, thread: Some(thread) }),
+            Ok(Err(e)) => {
+                let _ = thread.join();
+                Err(e)
+            }
+            Err(_) => Err(err(PlatformErrorKind::Other, "pipeline thread died during start")),
+        }
+    }
+}
+
+struct Worker {
+    capture: MonitorCapture,
+    converter: Converter,
+    targets: Vec<Nv12Target>,
+    encoder: Encoder,
+    config: StreamConfig,
+    stats: Arc<Mutex<PipelineStats>>,
+    // State
+    need_input: u32,
+    pending_capture: bool,
+    force_keyframe: bool,
+    next_slot: usize,
+    last_slot: Option<usize>,
+    last_submit: Option<Instant>,
+    last_capture: Option<Instant>,
+    refreshes: u32,
+    fps: u32,
+    start: Instant,
+    in_flight: VecDeque<(i64, Instant)>,
+    capture_rate: RateCounter,
+    encode_rate: RateCounter,
+    encode_ms: Ewma,
+}
+
+impl Worker {
+    fn new(
+        monitor: MonitorInfo,
+        config: StreamConfig,
+        desc: &EncoderDescriptor,
+        tx: mpsc::Sender<Msg>,
+        stats: Arc<Mutex<PipelineStats>>,
+    ) -> Result<Self, PlatformError> {
+        let gpu = d3d::create(desc.luid).map_err(|e| err(PlatformErrorKind::Encoder, e))?;
+        let frame_tx = tx.clone();
+        let capture = MonitorCapture::start(&gpu, &monitor, move || {
+            let _ = frame_tx.send(Msg::Frame);
+        })
+        .map_err(|e| err(PlatformErrorKind::Capture, format!("cannot capture {}: {e}", monitor.device)))?;
+        let (w, h) = (config.width & !1, config.height & !1);
+        let converter = Converter::new(&gpu, &RgbToYuv::for_color(&config.color))
+            .map_err(|e| err(PlatformErrorKind::Capture, e))?;
+        let targets = (0..RING)
+            .map(|_| converter.create_target(w, h))
+            .collect::<Result<Vec<_>>>()
+            .map_err(|e| err(PlatformErrorKind::Capture, e))?;
+        let encoder = Encoder::new(
+            &gpu,
+            desc,
+            EncoderSettings {
+                codec: config.codec,
+                width: w,
+                height: h,
+                fps: config.max_fps,
+                bitrate_bps: config.initial_bitrate_bps,
+                color: config.color,
+            },
+            move |e| tx.send(Msg::Encoder(e)).is_ok(),
+        )
+        .map_err(|e| err(PlatformErrorKind::Encoder, format!("{}: {e:#}", desc.name)))?;
+        let now = Instant::now();
+        Ok(Worker {
+            capture,
+            converter,
+            targets,
+            encoder,
+            fps: config.max_fps.max(1),
+            config,
+            stats,
+            need_input: 0,
+            pending_capture: true,
+            force_keyframe: true,
+            next_slot: 0,
+            last_slot: None,
+            last_submit: None,
+            last_capture: None,
+            refreshes: REFRESH_COUNT,
+            start: now,
+            in_flight: VecDeque::new(),
+            capture_rate: RateCounter::new(now),
+            encode_rate: RateCounter::new(now),
+            encode_ms: Ewma::new(0.1),
+        })
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::from_secs(1) / self.fps
+    }
+
+    fn run(&mut self, rx: &mpsc::Receiver<Msg>, sink: &dyn PipelineSink) -> Result<(), PlatformError> {
+        let mut last_stats = Instant::now();
+        loop {
+            let now = Instant::now();
+            let wait = self.next_deadline(now).saturating_duration_since(now).max(Duration::from_millis(1));
+            match rx.recv_timeout(wait) {
+                Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                Ok(Msg::Frame) => {
+                    tracing::trace!("frame arrived");
+                    self.pending_capture = true;
+                    self.capture_rate.tick(Instant::now());
+                }
+                Ok(Msg::Keyframe) => self.force_keyframe = true,
+                Ok(Msg::SetTarget(bps, fps)) => {
+                    self.encoder.set_bitrate(bps);
+                    self.fps = fps.clamp(1, self.config.max_fps.max(1));
+                }
+                Ok(Msg::Encoder(EncoderEvent::NeedInput)) => {
+                    tracing::trace!("encoder needs input");
+                    self.need_input += 1
+                }
+                Ok(Msg::Encoder(EncoderEvent::HaveOutput)) => {
+                    tracing::trace!("encoder has output");
+                    self.collect(sink)?
+                }
+                Ok(Msg::Encoder(EncoderEvent::Error(e))) => return Err(err(PlatformErrorKind::Encoder, e)),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            self.maybe_submit()?;
+            if last_stats.elapsed() >= Duration::from_millis(500) {
+                last_stats = Instant::now();
+                self.publish_stats();
+            }
+        }
+    }
+
+    fn next_deadline(&self, now: Instant) -> Instant {
+        let Some(last) = self.last_submit else { return now + Duration::from_millis(50) };
+        if self.pending_capture {
+            return last + self.frame_interval();
+        }
+        if self.refreshes < REFRESH_COUNT {
+            return last + REFRESH_DELAY;
+        }
+        last + KEEPALIVE
+    }
+
+    fn maybe_submit(&mut self) -> Result<(), PlatformError> {
+        if self.need_input == 0 {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let since = self.last_submit.map(|t| now.duration_since(t));
+        if self.pending_capture && since.is_none_or(|d| d >= self.frame_interval()) {
+            self.pending_capture = false;
+            if let Some(frame) = self.capture.latest().map_err(|e| err(PlatformErrorKind::Capture, e))? {
+                let (w, h) = (self.targets[0].width, self.targets[0].height);
+                if frame.width & !1 != w || frame.height & !1 != h {
+                    return Err(err(
+                        PlatformErrorKind::Display,
+                        format!("display size changed to {}x{}", frame.width, frame.height),
+                    ));
+                }
+                let slot = self.next_slot;
+                self.next_slot = (self.next_slot + 1) % RING;
+                let srv = self.converter.source_view(&frame.texture).map_err(|e| err(PlatformErrorKind::Capture, e))?;
+                self.converter.convert(&srv, &self.targets[slot]);
+                drop(frame);
+                self.last_slot = Some(slot);
+                self.last_capture = Some(now);
+                self.refreshes = 0;
+                return self.submit(slot, now);
+            }
+        }
+        let Some(slot) = self.last_slot else { return Ok(()) };
+        let since = since.unwrap_or(Duration::MAX);
+        if (self.refreshes < REFRESH_COUNT && since >= REFRESH_DELAY) || since >= KEEPALIVE || self.force_keyframe {
+            self.refreshes = self.refreshes.saturating_add(1);
+            return self.submit(slot, now);
+        }
+        Ok(())
+    }
+
+    fn submit(&mut self, slot: usize, now: Instant) -> Result<(), PlatformError> {
+        let ts = (now.duration_since(self.start).as_nanos() / 100) as i64;
+        let key = std::mem::take(&mut self.force_keyframe);
+        self.encoder
+            .encode(&self.targets[slot].texture, ts, key)
+            .map_err(|e| err(PlatformErrorKind::Encoder, format!("{e:#}")))?;
+        self.need_input -= 1;
+        self.last_submit = Some(now);
+        self.in_flight.push_back((ts, now));
+        if self.in_flight.len() > 16 {
+            self.in_flight.pop_front();
+        }
+        if key {
+            self.stats.lock().unwrap_or_else(|e| e.into_inner()).keyframes += 1;
+        }
+        Ok(())
+    }
+
+    fn collect(&mut self, sink: &dyn PipelineSink) -> Result<(), PlatformError> {
+        let Some(out) = self.encoder.collect().map_err(|e| err(PlatformErrorKind::Encoder, format!("{e:#}")))? else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        let mut capture_time = now;
+        while let Some((ts, t)) = self.in_flight.front().copied() {
+            if ts <= out.time_100ns {
+                self.in_flight.pop_front();
+                if ts == out.time_100ns {
+                    capture_time = t;
+                    self.encode_ms.add(now.duration_since(t).as_secs_f32() * 1000.0);
+                }
+            } else {
+                break;
+            }
+        }
+        self.encode_rate.tick(now);
+        let frame = EncodedFrame { data: Arc::from(out.data), capture_time, keyframe: out.keyframe };
+        if !sink.on_frame(frame) {
+            // Network queue full: the next frame must be an IDR.
+            self.force_keyframe = true;
+            self.stats.lock().unwrap_or_else(|e| e.into_inner()).frames_skipped += 1;
+        }
+        Ok(())
+    }
+
+    fn publish_stats(&mut self) {
+        let now = Instant::now();
+        let mut s = self.stats.lock().unwrap_or_else(|e| e.into_inner());
+        s.capture_fps = self.capture_rate.rate(now);
+        s.encode_fps = self.encode_rate.rate(now);
+        s.encode_ms_avg = self.encode_ms.get();
+        s.bitrate_target_bps = self.encoder.settings.bitrate_bps;
+        s.fps_target = self.fps;
+    }
+}
+
+/// Helper used by the CLI and tests: encodes `seconds` of a monitor into
+/// `out`, returning the number of frames.
+pub fn record(
+    monitor: MonitorInfo,
+    config: StreamConfig,
+    encoder: EncoderDescriptor,
+    seconds: f32,
+    out: &mut dyn std::io::Write,
+) -> Result<usize> {
+    struct Collect(mpsc::Sender<EncodedFrame>);
+    impl PipelineSink for Collect {
+        fn on_frame(&self, f: EncodedFrame) -> bool {
+            self.0.send(f).is_ok()
+        }
+        fn on_error(&self, e: PlatformError) {
+            tracing::error!(error = %e, "pipeline error");
+        }
+    }
+    let (tx, rx) = mpsc::channel();
+    let pipeline =
+        WindowsPipeline::start(monitor, config, encoder, Box::new(Collect(tx))).map_err(|e| anyhow::anyhow!(e))?;
+    let deadline = Instant::now() + Duration::from_secs_f32(seconds);
+    let mut n = 0;
+    while Instant::now() < deadline {
+        if let Ok(f) = rx.recv_timeout(Duration::from_millis(50)) {
+            out.write_all(&f.data)?;
+            n += 1;
+        }
+    }
+    drop(pipeline);
+    while let Ok(f) = rx.try_recv() {
+        out.write_all(&f.data)?;
+        n += 1;
+    }
+    out.flush().context("flush")?;
+    Ok(n)
+}

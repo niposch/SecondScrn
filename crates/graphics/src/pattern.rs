@@ -20,16 +20,8 @@ impl Image {
     }
 }
 
-pub const BARS: [[u8; 3]; 8] = [
-    [255, 255, 255],
-    [255, 255, 0],
-    [0, 255, 255],
-    [0, 255, 0],
-    [255, 0, 255],
-    [255, 0, 0],
-    [0, 0, 255],
-    [0, 0, 0],
-];
+pub const BARS: [[u8; 3]; 8] =
+    [[255, 255, 255], [255, 255, 0], [0, 255, 255], [0, 255, 0], [255, 0, 255], [255, 0, 0], [0, 0, 255], [0, 0, 0]];
 
 /// Region layout of [`desktop`], so tests can sample known areas.
 pub struct DesktopLayout {
@@ -60,11 +52,19 @@ pub fn desktop(width: usize, height: usize) -> Image {
                 match band {
                     // Vertical 1-px black/white lines (luma sharpness).
                     0 => {
-                        if x % 2 == 0 { [0, 0, 0] } else { [255, 255, 255] }
+                        if x % 2 == 0 {
+                            [0, 0, 0]
+                        } else {
+                            [255, 255, 255]
+                        }
                     }
                     // Red/blue 1-px lines (chroma subsampling stress).
                     1 => {
-                        if x % 2 == 0 { [255, 0, 0] } else { [0, 0, 255] }
+                        if x % 2 == 0 {
+                            [255, 0, 0]
+                        } else {
+                            [0, 0, 255]
+                        }
                     }
                     // Dark-mode IDE-like flat background.
                     2 => [30, 30, 30],

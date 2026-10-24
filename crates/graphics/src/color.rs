@@ -90,7 +90,7 @@ pub fn yuv_to_rgb_u8(yuv: [u8; 3], c: Coefficients, range: ColorRange) -> [u8; 3
 /// GPU shader. `width`/`height` must be even. Returns (Y plane, interleaved
 /// CbCr plane).
 pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, m: &RgbToYuv) -> (Vec<u8>, Vec<u8>) {
-    assert!(width % 2 == 0 && height % 2 == 0);
+    assert!(width.is_multiple_of(2) && height.is_multiple_of(2));
     assert_eq!(bgra.len(), width * height * 4);
     let px = |x: usize, y: usize| {
         let i = (y * width + x) * 4;
@@ -124,7 +124,6 @@ pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, m: &RgbToYuv) -> (
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     fn bt709_limited() -> RgbToYuv {
         RgbToYuv::new(Coefficients::BT709, ColorRange::Limited)
