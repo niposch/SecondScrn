@@ -36,6 +36,14 @@ impl WindowsHostPlatform {
         if encoders.is_empty() {
             tracing::error!("no working hardware video encoder found");
         }
+        if matches!(source, DisplaySource::Virtual) {
+            // A previous run that crashed may have left the virtual monitor
+            // attached; no session exists yet, so remove it.
+            if let Ok(Some(gdi)) = display::active_vdd() {
+                tracing::info!(%gdi, "removing virtual monitor left over from a previous run");
+                let _ = display::detach_vdd();
+            }
+        }
         WindowsHostPlatform { encoders: Mutex::new(encoders), displays: VirtualDisplayManager::default(), source }
     }
 

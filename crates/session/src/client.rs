@@ -693,6 +693,10 @@ async fn run_connection(
     let mut last_render: (u64, Instant) = (0, Instant::now());
     let mut last_bytes: Option<(u64, Instant)> = None;
     let mut metrics = ClientMetrics::default();
+    let mut ping_sent: Option<(u64, Instant)> = None;
+    let mut rtt_avg = secondscrn_diagnostics::Ewma::new(0.3);
+    // Raw (pre-retransmission) loss over few packets is noisy; smooth it.
+    let mut loss_avg = secondscrn_diagnostics::Ewma::new(0.2);
 
     let result = loop {
         tokio::select! {
@@ -705,6 +709,14 @@ async fn run_connection(
                 last_rx = Instant::now();
                 match msg {
                     HostMessage::Ping { nonce } => ch.send(&ClientMessage::Pong { nonce }).await?,
+                    // A WebRTC receiver doesn't measure RTT; the control
+                    // channel's ping round trip is a good proxy on a LAN.
+                    HostMessage::Pong { nonce } => {
+                        if let Some((_, t)) = ping_sent.take().filter(|(n, _)| *n == nonce) {
+                            rtt_avg.add(t.elapsed().as_secs_f32() * 1000.0);
+                            metrics.rtt_ms = Some(rtt_avg.get());
+                        }
+                    }
                     HostMessage::StreamChanged { stream: s } => {
                         tracing::info!(width = s.width, height = s.height, "stream reconfigured");
                         stream = s;
@@ -746,8 +758,13 @@ async fn run_connection(
                             }
                         }
                         last_bytes = Some((s.bytes_received, now));
-                        metrics.rtt_ms = s.rtt.map(|d| d.as_secs_f32() * 1000.0);
-                        metrics.loss = s.loss;
+                        if let Some(rtt) = s.rtt {
+                            metrics.rtt_ms = Some(rtt.as_secs_f32() * 1000.0);
+                        }
+                        if let Some(l) = s.loss {
+                            loss_avg.add(l);
+                            metrics.loss = Some(loss_avg.get());
+                        }
                     }
                     TransportEvent::Closed { reason } => break Err(SessionError::Transport(reason)),
                     TransportEvent::BitrateEstimate(_) | TransportEvent::KeyframeRequested => {}
@@ -774,6 +791,7 @@ async fn run_connection(
                     ch.send(&ClientMessage::RequestKeyframe).await?;
                 }
                 nonce += 1;
+                ping_sent = Some((nonce, Instant::now()));
                 ch.send(&ClientMessage::Ping { nonce }).await?;
                 let ds = worker.stats();
                 let now = Instant::now();
