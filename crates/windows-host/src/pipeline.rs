@@ -150,7 +150,7 @@ impl Worker {
         let capture = MonitorCapture::start(&gpu, &monitor, move || {
             let _ = frame_tx.send(Msg::Frame);
         })
-        .map_err(|e| err(PlatformErrorKind::Capture, format!("cannot capture {}: {e}", monitor.device)))?;
+        .map_err(|e| err(PlatformErrorKind::Capture, format!("cannot capture {}: {e:#}", monitor.device)))?;
         let (w, h) = (config.width & !1, config.height & !1);
         let converter = Converter::new(&gpu, &RgbToYuv::for_color(&config.color))
             .map_err(|e| err(PlatformErrorKind::Capture, e))?;

@@ -87,8 +87,23 @@ impl MonitorCapture {
     pub fn start(gpu: &Gpu, monitor: &MonitorInfo, on_frame: impl Fn() + Send + 'static) -> Result<Self> {
         ensure_winrt();
         let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem =
-            unsafe { interop.CreateForMonitor(HMONITOR(monitor.handle as _)) }.context("CreateForMonitor")?;
+        // A monitor that was just added to the desktop is rejected by WGC
+        // (E_INVALIDARG) for a moment; retry with a freshly resolved handle.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut handle = monitor.handle;
+        let item: GraphicsCaptureItem = loop {
+            match unsafe { interop.CreateForMonitor(HMONITOR(handle as _)) } {
+                Ok(item) => break item,
+                Err(e) if std::time::Instant::now() < deadline => {
+                    tracing::debug!(monitor = %monitor.device, error = %e, "monitor not capturable yet, retrying");
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    if let Some(m) = monitor_by_device(&monitor.device) {
+                        handle = m.handle;
+                    }
+                }
+                Err(e) => return Err(e).context("CreateForMonitor"),
+            }
+        };
         let dxgi: IDXGIDevice = gpu.device.cast()?;
         let device: IDirect3DDevice = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi) }?.cast()?;
         let size = item.Size()?;

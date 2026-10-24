@@ -69,4 +69,5 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 secondscrn-session = { workspace = true, features = ["test-support"] }
+secondscrn-devtools = { path = "../devtools" }
 tempfile = "3"

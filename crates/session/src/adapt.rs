@@ -8,6 +8,12 @@
 //!    reduce the frame rate before starving each frame of bits.
 //! 3. Back off quickly, recover slowly (hysteresis), so the encoder isn't
 //!    reconfigured on every estimate.
+//! 4. Desktop traffic is bursty: an idle screen sends almost nothing, and
+//!    the estimate then follows the tiny send rate. Such an application-
+//!    limited estimate is not a congestion signal, so it never lowers the
+//!    target; only estimates below what is actually being sent, or packet
+//!    loss, do. Otherwise the first scroll after a pause would be encoded at
+//!    an idle-level bitrate.
 
 use std::time::{Duration, Instant};
 
@@ -22,6 +28,10 @@ const ABSOLUTE_MIN_BPS: u64 = 1_000_000;
 const ABSOLUTE_MAX_BPS: u64 = 150_000_000;
 /// Lowest frame rate used when bandwidth is scarce.
 const MIN_FPS: u32 = 15;
+/// Sending below this share of the target counts as application-limited.
+const APP_LIMITED_RATIO: f64 = 0.5;
+/// Loss above this is treated as congestion even when application-limited.
+const CONGESTION_LOSS: f32 = 0.02;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitratePolicy {
@@ -76,6 +86,8 @@ pub struct BitrateController {
     policy: BitratePolicy,
     current: EncoderTarget,
     last_increase: Option<Instant>,
+    send_rate_bps: u64,
+    loss: f32,
 }
 
 impl BitrateController {
@@ -84,6 +96,8 @@ impl BitrateController {
             policy,
             current: EncoderTarget { bitrate_bps: policy.initial, fps: policy.max_fps },
             last_increase: None,
+            send_rate_bps: 0,
+            loss: 0.0,
         }
     }
 
@@ -108,6 +122,17 @@ impl BitrateController {
     /// The bitrate str0m's BWE should probe towards.
     pub fn desired_bitrate(&self) -> u64 {
         self.policy.ceiling
+    }
+
+    /// Updates the measured send rate and loss (about once per second).
+    pub fn on_network(&mut self, send_rate_bps: u64, loss: Option<f32>) {
+        self.send_rate_bps = send_rate_bps;
+        self.loss = loss.unwrap_or(0.0);
+    }
+
+    fn congested(&self) -> bool {
+        let app_limited = (self.send_rate_bps as f64) < self.current.bitrate_bps as f64 * APP_LIMITED_RATIO;
+        self.loss > CONGESTION_LOSS || !app_limited
     }
 
     /// Feeds a new bandwidth estimate. Returns a new encoder target when it
@@ -139,7 +164,7 @@ impl BitrateController {
         } else {
             let significant =
                 (bitrate as f64) < cur.bitrate_bps as f64 * (1.0 - MIN_CHANGE_RATIO / 2.0) || fps < cur.fps;
-            if !significant {
+            if !significant || !self.congested() {
                 return None;
             }
         }
@@ -159,8 +184,38 @@ impl BitrateController {
 mod tests {
     use super::*;
 
+    /// A controller that is actively sending at its target (not app-limited).
     fn controller() -> BitrateController {
-        BitrateController::new(BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Automatic, None))
+        let mut c = BitrateController::new(BitratePolicy::for_stream(
+            Codec::H265,
+            2560,
+            1600,
+            60,
+            QualityPreset::Automatic,
+            None,
+        ));
+        c.on_network(u64::MAX / 2, Some(0.0));
+        c
+    }
+
+    #[test]
+    fn idle_low_estimates_do_not_reduce_quality() {
+        let mut c = BitrateController::new(BitratePolicy::for_stream(
+            Codec::H265,
+            2560,
+            1600,
+            60,
+            QualityPreset::Automatic,
+            None,
+        ));
+        let initial = c.current();
+        // Static desktop: little is sent and the estimate follows it down.
+        c.on_network(700_000, Some(0.0));
+        assert!(c.on_estimate(780_000, Instant::now()).is_none());
+        assert_eq!(c.current(), initial);
+        // Loss is congestion even when idle.
+        c.on_network(700_000, Some(0.08));
+        assert!(c.on_estimate(780_000, Instant::now()).is_some());
     }
 
     #[test]

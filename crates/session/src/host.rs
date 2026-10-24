@@ -1056,6 +1056,7 @@ async fn stream(
                             }
                         }
                         last_bytes = Some((s.bytes_sent, now));
+                        controller.on_network(metrics.send_rate_bps, s.loss);
                         metrics.bytes_sent = s.bytes_sent;
                         metrics.rtt_ms = s.rtt.map(|d| d.as_secs_f32() * 1000.0);
                         metrics.loss = s.loss;

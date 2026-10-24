@@ -1437,6 +1437,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "secondscrn-devtools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "secondscrn-graphics",
+ "secondscrn-protocol",
+ "secondscrn-security",
+ "secondscrn-session",
+ "secondscrn-transport",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "secondscrn-diagnostics"
 version = "0.1.0"
 dependencies = [
@@ -1534,6 +1549,7 @@ name = "secondscrn-windows-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "secondscrn-devtools",
  "secondscrn-diagnostics",
  "secondscrn-graphics",
  "secondscrn-protocol",

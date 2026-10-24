@@ -1,0 +1,18 @@
+[package]
+name = "secondscrn-devtools"
+description = "Development tools for SecondScrn: a headless client that records the received stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+secondscrn-protocol.workspace = true
+secondscrn-session.workspace = true
+secondscrn-security.workspace = true
+secondscrn-transport.workspace = true
+secondscrn-graphics.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

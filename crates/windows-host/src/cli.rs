@@ -116,6 +116,28 @@ pub fn main() -> Result<()> {
                 std::mem::forget(lease); // keep attached after exit
             }
             Some("detach") => crate::display::detach_vdd()?,
+            Some("attach-record") => {
+                let delay: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(0);
+                let req = secondscrn_protocol::DisplayRequest {
+                    width: 1920,
+                    height: 1200,
+                    refresh_hz: 60,
+                    dpi: 96,
+                    orientation: secondscrn_protocol::Orientation::Landscape,
+                };
+                let mgr = crate::virtual_display::VirtualDisplayManager::default();
+                let lease = mgr.acquire(&req, std::time::Duration::ZERO).map_err(|e| anyhow::anyhow!(e))?;
+                use secondscrn_session::platform::DisplayLease;
+                let info = lease.info();
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                let monitor = capture::monitor_by_device(&info.id).context("monitor")?;
+                let gpu = crate::d3d::create(None)?;
+                match capture::MonitorCapture::start(&gpu, &monitor, || {}) {
+                    Ok(_) => println!("capture OK after {delay} ms"),
+                    Err(e) => println!("capture FAILED after {delay} ms: {e:#}"),
+                }
+                drop(lease);
+            }
             _ => eprintln!("usage: vdd status | attach WxH@HZ | detach"),
         },
         Some("targets") => {
