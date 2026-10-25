@@ -91,6 +91,87 @@ pub fn active_vdd() -> Result<Option<String>> {
     Ok(cfg.paths.iter().find(|p| is_vdd(p)).and_then(source_gdi_name))
 }
 
+// --- UI scaling ("Scale" in Settings → Display) ------------------------------
+//
+// Windows has no documented API for a monitor's scale factor. The Settings app
+// uses two private display-config packets, relative to the recommended scale;
+// they are widely used by display tools and need no elevation.
+
+/// Scale steps Windows offers, in percent; packets index into this list.
+const SCALE_STEPS: [u32; 12] = [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500];
+const GET_DPI_SCALE: DISPLAYCONFIG_DEVICE_INFO_TYPE = DISPLAYCONFIG_DEVICE_INFO_TYPE(-3);
+const SET_DPI_SCALE: DISPLAYCONFIG_DEVICE_INFO_TYPE = DISPLAYCONFIG_DEVICE_INFO_TYPE(-4);
+
+#[repr(C)]
+struct DpiScaleGet {
+    header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    /// Steps relative to the recommended scale (min is ≤ 0).
+    min_rel: i32,
+    cur_rel: i32,
+    max_rel: i32,
+}
+
+#[repr(C)]
+struct DpiScaleSet {
+    header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    scale_rel: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiScale {
+    pub current: u32,
+    pub options: Vec<u32>,
+}
+
+fn active_path(gdi: &str) -> Option<DISPLAYCONFIG_PATH_INFO> {
+    let cfg = query(QDC_ONLY_ACTIVE_PATHS).ok()?;
+    cfg.paths.into_iter().find(|p| source_gdi_name(p).is_some_and(|n| n.eq_ignore_ascii_case(gdi)))
+}
+
+fn read_scale(path: &DISPLAYCONFIG_PATH_INFO) -> Option<DpiScaleGet> {
+    let mut req = DpiScaleGet {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: GET_DPI_SCALE,
+            size: std::mem::size_of::<DpiScaleGet>() as u32,
+            adapterId: path.sourceInfo.adapterId,
+            id: path.sourceInfo.id,
+        },
+        min_rel: 0,
+        cur_rel: 0,
+        max_rel: 0,
+    };
+    (unsafe { DisplayConfigGetDeviceInfo(&mut req.header) } == 0).then_some(req)
+}
+
+/// The monitor's scale factor and the values Windows allows for it.
+pub fn ui_scale(gdi: &str) -> Option<UiScale> {
+    let r = read_scale(&active_path(gdi)?)?;
+    let recommended = (-r.min_rel).max(0) as usize;
+    let step = |rel: i32| SCALE_STEPS.get((recommended as i32 + rel).max(0) as usize).copied();
+    let max = (recommended as i32 + r.max_rel).clamp(0, SCALE_STEPS.len() as i32 - 1) as usize;
+    Some(UiScale { current: step(r.cur_rel)?, options: SCALE_STEPS[..=max].to_vec() })
+}
+
+pub fn set_ui_scale(gdi: &str, percent: u32) -> Result<UiScale> {
+    let path = active_path(gdi).context("the virtual monitor is not active")?;
+    let r = read_scale(&path).context("Windows did not report the monitor's scale")?;
+    let index = SCALE_STEPS.iter().position(|s| *s == percent).context("not a Windows scale step")?;
+    let req = DpiScaleSet {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: SET_DPI_SCALE,
+            size: std::mem::size_of::<DpiScaleSet>() as u32,
+            adapterId: path.sourceInfo.adapterId,
+            id: path.sourceInfo.id,
+        },
+        scale_rel: index as i32 + r.min_rel,
+    };
+    let rc = unsafe { DisplayConfigSetDeviceInfo(&req.header) };
+    if rc != 0 {
+        bail!("setting the scale failed ({rc})");
+    }
+    ui_scale(gdi).context("scale changed but cannot be read back")
+}
+
 /// True if a VDD target exists (attached or not).
 pub fn vdd_present() -> Result<bool> {
     Ok(query(QDC_ALL_PATHS)?.paths.iter().any(is_vdd))

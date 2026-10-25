@@ -163,6 +163,13 @@ pub struct ClientState {
     pub resolutions: Vec<ResolutionChoice>,
     /// Frame rates this screen can show; `stream.max_fps` is the current one.
     pub frame_rates: Vec<u32>,
+    /// Windows scale factor of this tablet's monitor (percent), while
+    /// streaming, and the values Windows allows.
+    pub ui_scale: Option<u32>,
+    pub ui_scales: Vec<u32>,
+    /// Snapdragon GSR upscaling: the setting, and whether this device can.
+    pub super_resolution: bool,
+    pub super_resolution_supported: bool,
 }
 
 fn preset_to(p: Preset) -> QualityPreset {
@@ -290,6 +297,10 @@ pub fn to_ffi(s: &ClientSnapshot) -> ClientState {
             .map(|o| ResolutionChoice { scale_percent: o.scale_percent, width: o.width, height: o.height })
             .collect(),
         frame_rates: s.frame_rates.clone(),
+        ui_scale: s.ui_scale.as_ref().map(|u| u.current),
+        ui_scales: s.ui_scale.as_ref().map(|u| u.options.clone()).unwrap_or_default(),
+        super_resolution: s.settings.super_resolution,
+        super_resolution_supported: crate::super_resolution_supported(),
     }
 }
 
@@ -355,6 +366,9 @@ impl SecondScrnClient {
         )
         .map_err(|e| ClientError::Failed { detail: e.to_string() })?;
 
+        crate::set_super_resolution(engine.snapshot().settings.super_resolution);
+        // Probe the GPU off the UI path (creates a GL context once).
+        std::thread::spawn(crate::super_resolution_supported);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut rx = engine.subscribe();
         let stop2 = stop.clone();
@@ -464,6 +478,20 @@ impl SecondScrnClient {
     /// Asks the PC to stream at most `fps` frames per second.
     pub fn set_frame_rate(&self, fps: u32) {
         self.engine.set_frame_rate(fps);
+    }
+
+    /// Sets the Windows scale factor of this tablet's monitor (percent).
+    pub fn set_ui_scale(&self, percent: u32) {
+        self.engine.set_ui_scale(percent);
+    }
+
+    /// Snapdragon GSR upscaling of streams below the panel resolution. Takes
+    /// effect when the video surface is next set up (the UI resizes it).
+    pub fn set_super_resolution(&self, enabled: bool) {
+        crate::set_super_resolution(enabled);
+        let mut s = self.engine.snapshot().settings;
+        s.super_resolution = enabled;
+        self.engine.update_settings(s);
     }
 
     pub fn set_touch_as_mouse(&self, enabled: bool) {

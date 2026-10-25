@@ -75,6 +75,8 @@ pub struct FakeHostState {
     pub plans: Mutex<Vec<DisplayPlan>>,
     /// Simulates the user changing the mode in the OS display settings.
     pub external_mode: Mutex<Option<(u32, u32)>>,
+    /// The display's scale factor (percent); 0 = default (150).
+    pub ui_scale: AtomicU32,
 }
 
 pub struct FakeHostPlatform {
@@ -100,6 +102,17 @@ impl DisplayLease for FakeLease {
             (info.width, info.height) = (w, h);
         }
         info
+    }
+    fn ui_scale(&self) -> Option<UiScale> {
+        let current = match self.state.ui_scale.load(Ordering::SeqCst) {
+            0 => 150,
+            v => v,
+        };
+        Some(UiScale { current, options: vec![100, 125, 150, 175, 200] })
+    }
+    fn set_ui_scale(&mut self, percent: u32) -> Result<UiScale, PlatformError> {
+        self.state.ui_scale.store(percent, Ordering::SeqCst);
+        Ok(self.ui_scale().expect("fake scale"))
     }
     fn reconfigure(&mut self, plan: &DisplayPlan) -> Result<DisplayInfo, PlatformError> {
         self.state.plans.lock().unwrap().push(plan.clone());

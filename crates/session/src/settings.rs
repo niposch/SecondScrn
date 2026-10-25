@@ -146,6 +146,9 @@ pub struct ClientSettings {
     pub touch_as_mouse: bool,
     /// Keep the current screen orientation while streaming.
     pub rotation_locked: bool,
+    /// Upscale streams below the panel resolution with Snapdragon GSR
+    /// (where supported) instead of the compositor's bilinear scaling.
+    pub super_resolution: bool,
 }
 
 impl Default for ClientSettings {
@@ -160,6 +163,7 @@ impl Default for ClientSettings {
             touch_input: true,
             touch_as_mouse: false,
             rotation_locked: false,
+            super_resolution: true,
         }
     }
 }

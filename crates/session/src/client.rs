@@ -25,7 +25,7 @@ use tokio_rustls::TlsConnector;
 use crate::SessionError;
 use crate::backoff::Backoff;
 use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STEP_TIMEOUT};
-use crate::platform::{ClientPlatform, DecodeOutcome, DecoderStats, PlatformError};
+use crate::platform::{ClientPlatform, DecodeOutcome, DecoderStats, PlatformError, UiScale};
 use crate::settings::{self, ClientSettings, KnownHost};
 use crate::snapshot::{ClientMetrics, ClientPhase, ClientSnapshot, DiscoveredHost, HostSummary, LinkHealth};
 
@@ -65,6 +65,7 @@ struct ClientState {
     host: Option<HostSummary>,
     stream: Option<StreamConfig>,
     metrics: ClientMetrics,
+    ui_scale: Option<UiScale>,
 }
 
 struct Connection {
@@ -134,6 +135,7 @@ impl ClientEngine {
             device_fingerprint_short: identity.fingerprint().short(),
             resolutions: Vec::new(),
             frame_rates: Vec::new(),
+            ui_scale: None,
         });
         let inner = Arc::new(ClientInner {
             platform: platform.clone(),
@@ -294,6 +296,11 @@ impl ClientEngine {
         self.inner.send_to_session(ClientMessage::SetFrameRate { fps });
     }
 
+    /// Sets the Windows scale factor of this tablet's monitor (percent).
+    pub fn set_ui_scale(&self, percent: u32) {
+        self.inner.send_to_session(ClientMessage::SetUiScale { percent });
+    }
+
     /// Call after the video surface was recreated.
     pub fn request_keyframe(&self) {
         self.inner.send_to_session(ClientMessage::RequestKeyframe);
@@ -421,6 +428,7 @@ impl ClientInner {
             let mut st = lock(&self.state);
             if matches!(phase, ClientPhase::Idle | ClientPhase::Failed { .. }) {
                 st.stream = None;
+                st.ui_scale = None;
                 st.metrics = ClientMetrics::default();
             }
             st.phase = Some(phase);
@@ -456,6 +464,7 @@ impl ClientInner {
             device_fingerprint_short: self.identity.fingerprint().short(),
             resolutions: display.map(|d| d.resolution_options()).unwrap_or_default(),
             frame_rates: display.map(|d| d.frame_rate_options()).unwrap_or_default(),
+            ui_scale: st.ui_scale.clone(),
         };
         drop(st);
         self.snapshot_tx.send_if_modified(|old| {
@@ -760,6 +769,8 @@ async fn run_connection(
     let mut nonce = 0u64;
     let mut frames_received = 0u64;
     let mut late_frames = 0u64;
+    let mut odd_frames = 0u64;
+    let mut last_rtp: Option<u64> = None;
     // Render rate from frame deltas between (2 s apart) stats ticks.
     let mut last_render: (u64, Instant) = (0, Instant::now());
     let mut last_bytes: Option<(u64, Instant)> = None;
@@ -799,6 +810,10 @@ async fn run_connection(
                         lock(&inner.state).stream = Some(stream.clone());
                         inner.publish();
                     }
+                    HostMessage::UiScale { current, options } => {
+                        lock(&inner.state).ui_scale = Some(UiScale { current, options });
+                        inner.publish();
+                    }
                     HostMessage::Goodbye { reconnect: false } => break Ok(End::HostClosed),
                     HostMessage::Goodbye { reconnect: true } => break Err(SessionError::ConnectionClosed),
                     HostMessage::Rejected { reason } => break Err(SessionError::Rejected(reason)),
@@ -810,6 +825,14 @@ async fn run_connection(
                 match ev {
                     TransportEvent::Frame(f) => {
                         frames_received += 1;
+                        // Diagnostics: frames must arrive once, in order.
+                        if let Some(prev) = last_rtp && f.rtp_time <= prev {
+                            odd_frames += 1;
+                            if odd_frames.is_power_of_two() {
+                                tracing::warn!(odd_frames, rtp = f.rtp_time, prev, len = f.data.len(), key = f.keyframe, "frame with repeated or older timestamp");
+                            }
+                        }
+                        last_rtp = Some(f.rtp_time);
                         if !worker.push(f) {
                             late_frames += 1;
                             media.request_keyframe();

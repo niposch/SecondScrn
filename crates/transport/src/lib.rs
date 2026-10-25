@@ -494,7 +494,7 @@ pub async fn accept_offer(config: ReceiverConfig, offer_sdp: &str) -> Result<(Me
         }
     }
     let mid = answer_mid(&answer).ok_or(TransportError::CodecNotNegotiated(config.codec))?;
-    let handle = spawn_driver(rtc, sockets, mid, Role::Receiver);
+    let handle = spawn_driver(rtc, sockets, mid, Role::Receiver { codec: config.codec });
     Ok((handle, answer.to_sdp_string()))
 }
 
@@ -504,7 +504,7 @@ fn answer_mid(answer: &SdpAnswer) -> Option<Mid> {
 
 enum Role {
     Sender { codec: Codec, pt: Option<str0m::media::Pt> },
-    Receiver,
+    Receiver { codec: Codec },
 }
 
 struct Datagram {
@@ -565,6 +565,7 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
         first_frame_time: None,
         impairer: None,
         last_seq: None,
+        prefix: None,
         send_drops: 0,
     };
     tokio::spawn(async move {
@@ -597,6 +598,9 @@ struct Driver {
     impairer: Option<Impairer>,
     /// Highest RTP sequence number of an emitted frame (receiver).
     last_seq: Option<u64>,
+    /// A piece without picture data (parameter sets) waiting to be joined
+    /// with the picture of the same timestamp (receiver).
+    prefix: Option<(u64, Vec<u8>)>,
     /// Packets dropped because the socket's send buffer was full.
     send_drops: u64,
 }
@@ -824,13 +828,27 @@ impl Driver {
                 if !contiguous {
                     self.request_keyframe();
                 }
-                let frame = ReceivedFrame {
-                    data: data.data,
-                    rtp_time: data.time.numer(),
-                    arrival: data.network_time,
-                    keyframe,
-                    contiguous,
-                };
+                let rtp_time = data.time.numer();
+                // A piece without a picture (e.g. parameter sets sent ahead of a
+                // fragmented slice) can be delivered on its own; decoding it as a
+                // frame corrupts the picture. Join it with the picture that
+                // follows it under the same timestamp.
+                let mut payload = data.data;
+                if let Role::Receiver { codec } = self.role {
+                    if !secondscrn_graphics::bitstream::has_picture(codec, &payload) {
+                        self.prefix = Some((rtp_time, payload.to_vec()));
+                        return;
+                    }
+                    if let Some((t, mut prefix)) = self.prefix.take()
+                        && t == rtp_time
+                    {
+                        prefix.extend_from_slice(&payload);
+                        payload = prefix.into();
+                    }
+                }
+                let keyframe = keyframe
+                    || matches!(self.role, Role::Receiver { codec } if secondscrn_graphics::bitstream::is_keyframe(codec, &payload));
+                let frame = ReceivedFrame { data: payload, rtp_time, arrival: data.network_time, keyframe, contiguous };
                 if self.events.try_send(TransportEvent::Frame(frame)).is_err() {
                     // Decoder is behind: the dropped frame breaks the reference
                     // chain, so ask for a fresh keyframe.

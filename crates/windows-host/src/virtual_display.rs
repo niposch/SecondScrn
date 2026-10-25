@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use secondscrn_protocol::DisplayRequest;
-use secondscrn_session::platform::{DisplayInfo, DisplayLease, DisplayPlan, PlatformError, PlatformErrorKind};
+use secondscrn_session::platform::{DisplayInfo, DisplayLease, DisplayPlan, PlatformError, PlatformErrorKind, UiScale};
 
 use crate::display::{self, Mode};
 use crate::vdd;
@@ -200,6 +200,16 @@ impl DisplayLease for VddLease {
             info.refresh_hz = m.refresh_hz;
         }
         info
+    }
+
+    fn ui_scale(&self) -> Option<UiScale> {
+        display::ui_scale(&self.info.id).map(|s| UiScale { current: s.current, options: s.options })
+    }
+
+    fn set_ui_scale(&mut self, percent: u32) -> Result<UiScale, PlatformError> {
+        display::set_ui_scale(&self.info.id, percent)
+            .map(|s| UiScale { current: s.current, options: s.options })
+            .map_err(|e| PlatformError::new(PlatformErrorKind::Display, format!("{e:#}")))
     }
 
     fn reconfigure(&mut self, plan: &DisplayPlan) -> Result<DisplayInfo, PlatformError> {

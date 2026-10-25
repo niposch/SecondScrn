@@ -1042,6 +1042,11 @@ async fn stream(
     let shared_display = Arc::new(Mutex::new(display.clone()));
     let input_tx = spawn_input_thread(inner.platform.clone(), shared_display.clone());
 
+    // After setup: the tablet only listens for it once streaming.
+    if let Some(s) = lease.ui_scale() {
+        ch.send(&HostMessage::UiScale { current: s.current, options: s.options }).await?;
+    }
+
     let mut ping = tokio::time::interval(PING_INTERVAL);
     let mut last_rx = Instant::now();
     let mut nonce = 0u64;
@@ -1080,6 +1085,15 @@ async fn stream(
                         scale = settings::snap_scale(scale_percent);
                         inner.remember_scale(&fp, scale);
                         change = Some(DisplayChange::Plan);
+                    }
+                    ClientMessage::SetUiScale { percent } => {
+                        match lease.set_ui_scale(percent) {
+                            Ok(s) => {
+                                tracing::info!(percent = s.current, "display scale changed");
+                                ch.send(&HostMessage::UiScale { current: s.current, options: s.options }).await?;
+                            }
+                            Err(e) => tracing::warn!(error = %e, percent, "cannot change the display scale"),
+                        }
                     }
                     ClientMessage::SetFrameRate { fps } => {
                         fps_cap = fps.clamp(10, 240);
@@ -1231,6 +1245,10 @@ async fn stream(
                 tracing::debug!(?t, "target after display change");
             }
             ch.send(&HostMessage::StreamChanged { stream: config.clone() }).await?;
+            // Windows picks a new default scale for a new resolution.
+            if let Some(s) = lease.ui_scale() {
+                ch.send(&HostMessage::UiScale { current: s.current, options: s.options }).await?;
+            }
             pipeline = start_pipeline(
                 display.clone(),
                 config.clone(),

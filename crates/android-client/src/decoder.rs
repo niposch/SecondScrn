@@ -143,6 +143,19 @@ struct Active {
     shared: Arc<Shared>,
     output: Option<std::thread::JoinHandle<()>>,
     generation: u64,
+    /// Present when the decoder renders into the upscaler instead of the
+    /// window. Dropped after the codec has stopped.
+    upscaler: Option<crate::upscale::Upscaler>,
+}
+
+impl Active {
+    /// Pictures shown: by the upscaler if it is in use, else by the codec.
+    fn rendered(&self) -> u64 {
+        match &self.upscaler {
+            Some(u) => u.presented.load(Ordering::Relaxed),
+            None => self.shared.rendered.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl Drop for Active {
@@ -177,7 +190,7 @@ impl AndroidDecoder {
         }
         if let Some(old) = self.active.take() {
             // Stops the old codec; keep its count so stats stay monotonic.
-            self.stats.frames_rendered += old.shared.rendered.load(Ordering::Relaxed);
+            self.stats.frames_rendered += old.rendered();
             self.stats.frames_dropped += old.shared.skipped.load(Ordering::Relaxed);
         }
         let Some(window) = window else { return Ok(false) };
@@ -194,7 +207,24 @@ impl AndroidDecoder {
             // operating rate keeps them at full speed, as game streamers do.
             format.set_i32(KEY_OPERATING_RATE, i16::MAX as i32);
         }
-        codec.configure(&format, Some(&window), MediaCodecDirection::Decoder).map_err(|e| err("configure", e))?;
+        // A window larger than the stream means the UI wants upscaling (it
+        // sizes the surface to the view only then).
+        let (w, h) = (self.config.width, self.config.height);
+        let larger = window.width() > w as i32 || window.height() > h as i32;
+        let mut upscaler = None;
+        let mut output_window = window.clone();
+        if larger && crate::upscale::enabled() && crate::upscale::supported() {
+            match crate::upscale::Upscaler::start(window.clone(), w, h) {
+                Ok((u, reader_window)) => {
+                    upscaler = Some(u);
+                    output_window = reader_window;
+                }
+                Err(e) => tracing::warn!(error = %e, "super resolution failed; the compositor scales instead"),
+            }
+        }
+        codec
+            .configure(&format, Some(&output_window), MediaCodecDirection::Decoder)
+            .map_err(|e| err("configure", e))?;
         codec.start().map_err(|e| err("start", e))?;
         tracing::info!(
             decoder = %codec.name().unwrap_or_default(),
@@ -215,7 +245,7 @@ impl AndroidDecoder {
             .name("secondscrn-render".into())
             .spawn(move || render_loop(&s))
             .map_err(|e| PlatformError::new(PlatformErrorKind::Decoder, e.to_string()))?;
-        self.active = Some(Active { shared, output: Some(output), generation });
+        self.active = Some(Active { shared, output: Some(output), generation, upscaler });
         Ok(true)
     }
 }
@@ -324,7 +354,7 @@ impl VideoDecoder for AndroidDecoder {
     fn stats(&self) -> DecoderStats {
         let mut s = self.stats;
         if let Some(a) = &self.active {
-            s.frames_rendered += a.shared.rendered.load(Ordering::Relaxed);
+            s.frames_rendered += a.rendered();
             s.frames_dropped += a.shared.skipped.load(Ordering::Relaxed);
             s.decode_ms_avg = a.shared.decode_ms.lock().unwrap_or_else(|e| e.into_inner()).get();
         }

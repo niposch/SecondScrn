@@ -118,6 +118,14 @@ pub fn main() -> Result<()> {
                 std::mem::forget(lease); // keep attached after exit
             }
             Some("detach") => crate::display::detach_vdd()?,
+            // Reads or sets the Windows scale factor of the virtual monitor.
+            Some("scale") => {
+                let gdi = crate::display::active_vdd()?.context("the virtual monitor is not active")?;
+                match args.get(2) {
+                    Some(p) => println!("{:?}", crate::display::set_ui_scale(&gdi, p.parse()?)?),
+                    None => println!("{:?}", crate::display::ui_scale(&gdi)),
+                }
+            }
             // Changes the mode like the Windows display settings would.
             Some("set-mode") => {
                 let spec = args.get(2).context("usage: vdd set-mode WIDTHxHEIGHT@HZ")?;

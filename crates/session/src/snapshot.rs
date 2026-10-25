@@ -6,7 +6,7 @@
 use secondscrn_protocol::{ClientStats, CodecCapability, ResolutionOption, StreamConfig};
 use serde::{Deserialize, Serialize};
 
-use crate::platform::{DisplayInfo, DriverStatus, PipelineStats};
+use crate::platform::{DisplayInfo, DriverStatus, PipelineStats, UiScale};
 use crate::settings::{ClientSettings, DevicePreferences, HostSettings, KnownHost};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +183,8 @@ pub struct ClientSnapshot {
     /// Resolutions the tablet can ask for, from its current panel size.
     pub resolutions: Vec<ResolutionOption>,
     pub frame_rates: Vec<u32>,
+    /// Windows scale factor of the tablet's monitor, while streaming.
+    pub ui_scale: Option<UiScale>,
 }
 
 #[cfg(test)]

@@ -457,6 +457,11 @@ pub enum ClientMessage {
     SetFrameRate {
         fps: u32,
     },
+    /// Windows scale factor ("Scale" in display settings) of the tablet's
+    /// monitor, in percent.
+    SetUiScale {
+        percent: u32,
+    },
     Ping {
         nonce: u64,
     },
@@ -497,6 +502,13 @@ pub enum HostMessage {
     /// exchange may follow.
     StreamChanged {
         stream: StreamConfig,
+    },
+    /// The Windows scale factor of the tablet's monitor and the values
+    /// Windows allows for it (percent). Sent when the monitor is set up or
+    /// changes, and after `SetUiScale`.
+    UiScale {
+        current: u32,
+        options: Vec<u32>,
     },
     Ping {
         nonce: u64,
@@ -603,6 +615,7 @@ mod tests {
         });
         roundtrip_client(ClientMessage::SetResolution { scale_percent: 50 });
         roundtrip_client(ClientMessage::SetFrameRate { fps: 90 });
+        roundtrip_client(ClientMessage::SetUiScale { percent: 175 });
         roundtrip_client(ClientMessage::Stats { stats: ClientStats::default() });
         roundtrip_client(ClientMessage::Goodbye);
     }

@@ -59,6 +59,35 @@ pub fn has_parameter_sets(codec: Codec, au: &[u8]) -> bool {
     }
 }
 
+/// True if the buffer contains picture data (a VCL NAL unit), not only
+/// delimiters, parameter sets or SEI. AV1 is always treated as a picture.
+pub fn has_picture(codec: Codec, au: &[u8]) -> bool {
+    match codec {
+        Codec::Av1 => true,
+        _ => nal_units(au).filter_map(|n| nal_type(codec, n)).any(|t| match codec {
+            Codec::H264 => (1..=5).contains(&t),
+            _ => t <= 31,
+        }),
+    }
+}
+
+/// Removes access unit delimiters, which decoders don't need. A delimiter
+/// sent ahead of a large fragmented slice was delivered by the WebRTC
+/// depacketizer as a frame of its own.
+pub fn strip_delimiters(codec: Codec, au: &[u8]) -> Vec<u8> {
+    let aud = match codec {
+        Codec::H264 => 9,
+        Codec::H265 => 35,
+        Codec::Av1 => return au.to_vec(),
+    };
+    let mut out = Vec::with_capacity(au.len());
+    for n in nal_units(au).filter(|n| nal_type(codec, n) != Some(aud)) {
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(n);
+    }
+    out
+}
+
 /// Prepends `headers` (Annex-B parameter sets) to a keyframe that lacks them.
 pub fn ensure_parameter_sets(codec: Codec, au: Vec<u8>, headers: &[u8]) -> Vec<u8> {
     if headers.is_empty() || codec == Codec::Av1 || !is_keyframe(codec, &au) || has_parameter_sets(codec, &au) {
@@ -73,6 +102,18 @@ pub fn ensure_parameter_sets(codec: Codec, au: Vec<u8>, headers: &[u8]) -> Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delimiters_are_removed_and_pictures_detected() {
+        let au = [0, 0, 0, 1, 0x46, 0x01, 0x50, 0, 0, 0, 1, 0x02, 0x01, 9, 9];
+        let stripped = strip_delimiters(Codec::H265, &au);
+        assert_eq!(stripped, [0, 0, 0, 1, 0x02, 0x01, 9, 9]);
+        assert!(has_picture(Codec::H265, &au));
+        assert!(!has_picture(Codec::H265, &[0, 0, 0, 1, 0x46, 0x01, 0x50]));
+        assert!(!has_picture(Codec::H265, &[0, 0, 0, 1, 0x40, 0x01, 1, 0, 0, 1, 0x42, 0x01, 2]));
+        assert!(has_picture(Codec::H264, &[0, 0, 0, 1, 0x65, 1]));
+        assert!(!has_picture(Codec::H264, &[0, 0, 0, 1, 0x09, 0x10]));
+    }
 
     #[test]
     fn splits_nals_with_3_and_4_byte_start_codes() {

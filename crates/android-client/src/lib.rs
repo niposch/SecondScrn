@@ -14,3 +14,24 @@ mod decoder;
 mod jni_surface;
 mod logging;
 pub mod platform;
+#[cfg(target_os = "android")]
+mod upscale;
+
+/// Snapdragon GSR can run on this device (Adreno GPU, OpenGL ES 3.1).
+pub(crate) fn super_resolution_supported() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        upscale::supported()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        false
+    }
+}
+
+pub(crate) fn set_super_resolution(enabled: bool) {
+    #[cfg(target_os = "android")]
+    upscale::set_enabled(enabled);
+    #[cfg(not(target_os = "android"))]
+    let _ = enabled;
+}

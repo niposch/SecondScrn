@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 secondscrn-protocol.workspace = true
+secondscrn-graphics.workspace = true
 str0m.workspace = true
 tokio.workspace = true
 tracing.workspace = true

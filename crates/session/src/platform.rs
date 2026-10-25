@@ -67,6 +67,14 @@ pub struct DisplayInfo {
     pub is_virtual: bool,
 }
 
+/// OS scale factor of a display ("Scale" in Windows display settings).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiScale {
+    /// Percent, e.g. 150.
+    pub current: u32,
+    pub options: Vec<u32>,
+}
+
 /// The mode a session wants, plus the sizes the user is most likely to switch
 /// to next (the other orientation, the native size). The platform can make
 /// those available up front: VDD needs a driver reload, which briefly removes
@@ -100,6 +108,14 @@ pub trait DisplayLease: Send {
     /// Changes the mode (the tablet rotated, or the user picked another
     /// resolution).
     fn reconfigure(&mut self, plan: &DisplayPlan) -> Result<DisplayInfo, PlatformError>;
+    /// The OS scale factor of the display and the allowed values, if the
+    /// platform can change it.
+    fn ui_scale(&self) -> Option<UiScale> {
+        None
+    }
+    fn set_ui_scale(&mut self, _percent: u32) -> Result<UiScale, PlatformError> {
+        Err(PlatformError::new(PlatformErrorKind::Display, "scaling cannot be changed on this display"))
+    }
 }
 
 /// Receives the output of a running capture/encode pipeline.
@@ -120,6 +136,8 @@ pub struct PipelineStats {
     /// dropped them.
     pub frames_skipped: u64,
     pub keyframes: u64,
+    /// Frames handed to the network.
+    pub frames_encoded: u64,
     pub bitrate_target_bps: u64,
     pub fps_target: u32,
 }

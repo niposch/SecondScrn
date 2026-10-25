@@ -44,3 +44,9 @@ zeroize = "1"
 lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
+
+# str0m 0.24.1 with one fix (vendor/str0m/src/packet/h265.rs,
+# `is_partition_tail`): HEVC pictures with several slices were delivered as
+# several frames. See vendor/str0m/SECONDSCRN-PATCH.md.
+[patch.crates-io]
+str0m = { path = "vendor/str0m" }

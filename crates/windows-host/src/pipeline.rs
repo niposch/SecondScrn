@@ -342,7 +342,11 @@ impl Worker {
             }
         }
         self.encode_rate.tick(now);
-        let frame = EncodedFrame { data: Arc::from(out.data), capture_time, keyframe: out.keyframe };
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).frames_encoded += 1;
+        // Without delimiters every frame starts with picture data or parameter
+        // sets that the depacketizer keeps with the picture.
+        let data = secondscrn_graphics::bitstream::strip_delimiters(self.config.codec, &out.data);
+        let frame = EncodedFrame { data: Arc::from(data), capture_time, keyframe: out.keyframe };
         if !sink.on_frame(frame) {
             // Network queue full: the next frame must be an IDR.
             self.force_keyframe = true;

@@ -111,7 +111,11 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
             // Decode at exactly the stream resolution; the compositor maps it
             // 1:1 when the PC honoured the tablet's size.
             update = {
-                it.holder.setFixedSize(stream.width.toInt(), stream.height.toInt())
+                // Upscaling renders at the view's (panel) size; otherwise
+                // decode at exactly the stream size and let the compositor
+                // scale.
+                if (upscaling(state)) it.holder.setSizeFromLayout()
+                else it.holder.setFixedSize(stream.width.toInt(), stream.height.toInt())
                 requestFrameRate(it.holder, stream.maxFps.toInt())
             },
         )
@@ -150,6 +154,14 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
     }
 
     DisposableEffect(Unit) { onDispose { NativeSurface.setSurface(null) } }
+}
+
+/** Snapdragon GSR upscales streams below the panel resolution. */
+private fun upscaling(state: ClientState): Boolean {
+    val s = state.stream ?: return false
+    val panel = state.resolutions.firstOrNull() ?: return false
+    return state.superResolution && state.superResolutionSupported &&
+        (s.width < panel.width || s.height < panel.height)
 }
 
 /**
@@ -203,6 +215,7 @@ private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: 
             ResolutionSelector(state, repo)
             Text("Frame rate", style = MaterialTheme.typography.labelLarge)
             FrameRateSelector(state, repo)
+            ScaleStepper(state, repo)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = state.touchInput,
@@ -215,6 +228,13 @@ private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: 
                     onClick = { repo.setTouchAsMouse(!state.touchAsMouse) },
                     label = { Text("Touch as mouse") },
                 )
+                if (state.superResolutionSupported) {
+                    FilterChip(
+                        selected = state.superResolution,
+                        onClick = { repo.setSuperResolution(!state.superResolution) },
+                        label = { Text("Snapdragon GSR") },
+                    )
+                }
                 FilterChip(
                     selected = state.rotationLocked,
                     onClick = { repo.setRotationLocked(!state.rotationLocked) },
@@ -258,6 +278,20 @@ fun FrameRateSelector(state: ClientState, repo: ClientRepository) {
                 label = { Text("$r fps") },
             )
         }
+    }
+}
+
+/** Windows' scale factor for this monitor, as a compact stepper. */
+@Composable
+fun ScaleStepper(state: ClientState, repo: ClientRepository) {
+    val current = state.uiScale?.toInt() ?: return
+    val options = state.uiScales.map { it.toInt() }
+    val i = options.indexOf(current)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Windows scaling", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(end = 8.dp))
+        OutlinedButton(onClick = { repo.setUiScale(options[i - 1]) }, enabled = i > 0) { Text("−") }
+        Text("$current %", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 8.dp))
+        OutlinedButton(onClick = { repo.setUiScale(options[i + 1]) }, enabled = i in 0 until options.size - 1) { Text("+") }
     }
 }
 

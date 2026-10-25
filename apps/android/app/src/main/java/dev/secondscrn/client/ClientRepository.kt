@@ -97,6 +97,8 @@ class ClientRepository(private val context: Context) {
     fun setRotationLocked(locked: Boolean) = client.setRotationLocked(locked)
     fun setResolution(scalePercent: Int) = client.setResolution(scalePercent.toUInt())
     fun setFrameRate(fps: Int) = client.setFrameRate(fps.toUInt())
+    fun setUiScale(percent: Int) = client.setUiScale(percent.toUInt())
+    fun setSuperResolution(enabled: Boolean) = client.setSuperResolution(enabled)
     fun setDisplay(width: Int, height: Int, refreshHz: Int, dpi: Int) =
         client.setDisplay(width.toUInt(), height.toUInt(), refreshHz.toUInt(), dpi.toUInt())
 

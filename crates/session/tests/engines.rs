@@ -241,6 +241,19 @@ async fn resolution_follows_tablet_pc_and_windows_settings() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tablet_changes_windows_scaling() {
+    let r = rig().await;
+    streaming(&r).await;
+    let mut cs = r.client.subscribe();
+    let s = wait(&mut cs, 5, "scale", |s: &ClientSnapshot| s.ui_scale.is_some()).await.ui_scale.unwrap();
+    assert_eq!(s.current, 150);
+    assert!(s.options.contains(&200));
+    r.client.set_ui_scale(200);
+    wait(&mut cs, 5, "scale 200", |s: &ClientSnapshot| s.ui_scale.as_ref().is_some_and(|u| u.current == 200)).await;
+    assert_eq!(r.host_platform.state.ui_scale.load(Ordering::SeqCst), 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn touch_and_pen_reach_the_host() {
     let r = rig().await;
     streaming(&r).await;
