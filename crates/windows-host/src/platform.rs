@@ -3,9 +3,9 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use secondscrn_protocol::{CodecCapability, DisplayRequest, InputEvent, StreamConfig};
+use secondscrn_protocol::{CodecCapability, InputEvent, StreamConfig};
 use secondscrn_session::platform::{
-    DisplayInfo, DisplayLease, DriverStatus, HostPlatform, PipelineSink, PlatformError, PlatformErrorKind,
+    DisplayInfo, DisplayLease, DisplayPlan, DriverStatus, HostPlatform, PipelineSink, PlatformError, PlatformErrorKind,
     VideoPipeline,
 };
 
@@ -28,6 +28,7 @@ pub struct WindowsHostPlatform {
     encoders: Mutex<Vec<(CodecCapability, EncoderDescriptor)>>,
     displays: VirtualDisplayManager,
     source: DisplaySource,
+    input: Mutex<input::Injector>,
 }
 
 impl WindowsHostPlatform {
@@ -44,7 +45,16 @@ impl WindowsHostPlatform {
                 let _ = display::detach_vdd();
             }
         }
-        WindowsHostPlatform { encoders: Mutex::new(encoders), displays: VirtualDisplayManager::default(), source }
+        WindowsHostPlatform {
+            encoders: Mutex::new(encoders),
+            displays: VirtualDisplayManager::default(),
+            source,
+            input: Mutex::default(),
+        }
+    }
+
+    fn injector(&self) -> std::sync::MutexGuard<'_, input::Injector> {
+        self.input.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn reprobe(&self) {
@@ -65,7 +75,7 @@ impl DisplayLease for ExistingMonitor {
     fn info(&self) -> DisplayInfo {
         self.0.clone()
     }
-    fn reconfigure(&mut self, _req: &DisplayRequest) -> Result<DisplayInfo, PlatformError> {
+    fn reconfigure(&mut self, _plan: &DisplayPlan) -> Result<DisplayInfo, PlatformError> {
         Ok(self.0.clone())
     }
 }
@@ -99,13 +109,9 @@ impl HostPlatform for WindowsHostPlatform {
         }
     }
 
-    fn acquire_display(
-        &self,
-        request: &DisplayRequest,
-        linger: Duration,
-    ) -> Result<Box<dyn DisplayLease>, PlatformError> {
+    fn acquire_display(&self, plan: &DisplayPlan, linger: Duration) -> Result<Box<dyn DisplayLease>, PlatformError> {
         match &self.source {
-            DisplaySource::Virtual => Ok(Box::new(self.displays.acquire(request, linger)?)),
+            DisplaySource::Virtual => Ok(Box::new(self.displays.acquire(plan, linger)?)),
             DisplaySource::Existing(device) => {
                 let m = match device {
                     Some(d) => capture::monitor_by_device(d),
@@ -143,6 +149,16 @@ impl HostPlatform for WindowsHostPlatform {
     }
 
     fn inject_input(&self, display: &DisplayInfo, event: &InputEvent) -> Result<(), PlatformError> {
-        input::inject(&display.id, event).map_err(|e| PlatformError::new(PlatformErrorKind::Input, e.to_string()))
+        self.injector()
+            .inject(&display.id, event)
+            .map_err(|e| PlatformError::new(PlatformErrorKind::Input, format!("{e:#}")))
+    }
+
+    fn input_idle(&self, _display: &DisplayInfo) {
+        self.injector().idle();
+    }
+
+    fn input_ended(&self) {
+        self.injector().release_all();
     }
 }

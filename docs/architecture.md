@@ -69,8 +69,10 @@ without Windows or Android.
    candidates (one UDP socket per interface, plus the address the tablet used
    for TCP as an extra remote candidate, which makes NAT setups such as the
    Android emulator work).
-6. **Streaming.** Input, statistics, keyframe requests, rotation and preset
-   changes travel on the control channel; video on SRTP.
+6. **Streaming.** Input (mouse, touch frames, pen), statistics, keyframe
+   requests, rotation, preset, resolution and frame-rate changes travel on the
+   control channel; video on SRTP. Touch and pen are injected on Windows as
+   synthetic pointer devices (real touch and pen), mouse with `SendInput`.
 7. **End / recovery.** Either side pings every 2 s; 8 s of silence ends the
    session. The tablet reconnects with backoff (0.5 s … 8 s). The host keeps
    the virtual monitor for a linger period (default 30 s) so windows don't
@@ -121,7 +123,10 @@ controller in `session::adapt` sets the encoder target instead:
   budget in use): radios doze between sparse idle packets and RTT jumps
   without any queueing. Loss always counts.
 * When even the floor doesn't fit, fps drops (to ≥ 15) before per-frame
-  quality; resolution never changes during a session.
+  quality. Resolution is never changed automatically; the user picks it
+  (tablet, PC app or Windows settings) and the session follows: the monitor
+  mode changes, the encoder restarts at the new size and the WebRTC session
+  and tablet surface are kept.
 
 Why not GCC: str0m paces at 1.1 × the GCC estimate. A desktop is idle most of
 the time, so the estimate follows the idle send rate (~1 Mbit/s) and every

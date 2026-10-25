@@ -91,6 +91,7 @@ pub fn negotiate(input: &NegotiationInput<'_>) -> Result<StreamConfig, Negotiati
         color: ColorInfo::SDR_BT709_LIMITED,
         initial_bitrate_bps: policy.initial,
         encoder: enc.implementation.clone(),
+        scale_percent: 100,
     })
 }
 

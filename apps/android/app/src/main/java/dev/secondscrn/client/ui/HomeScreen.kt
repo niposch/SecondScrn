@@ -213,13 +213,35 @@ private fun SettingsCard(state: ClientState, repo: ClientRepository) {
             PresetSelector(state.preset, repo::setPreset)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Control the PC with touch", style = MaterialTheme.typography.bodyLarge)
+                    Text("Control the PC with touch and pen", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        "Tap to click, drag to select, long-press to right-click, two fingers to scroll.",
+                        "While streaming, the handle at the top edge (or Back) shows the session options.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
                 Switch(checked = state.touchInput, onCheckedChange = repo::setTouchInput)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Touch as mouse", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Off: fingers are real touch on the PC (Windows gestures). On: tap to click, " +
+                            "long-press to right-click, two fingers to scroll. A pen always works as a pen.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(
+                    checked = state.touchAsMouse,
+                    enabled = state.touchInput,
+                    onCheckedChange = repo::setTouchAsMouse,
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Lock rotation", style = MaterialTheme.typography.bodyLarge)
+                    Text("Keep the current orientation while SecondScrn is open.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = state.rotationLocked, onCheckedChange = repo::setRotationLocked)
             }
         }
     }

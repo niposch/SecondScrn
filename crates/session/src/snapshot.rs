@@ -3,7 +3,7 @@
 //! The UIs never poll internal state; they receive a fresh snapshot whenever
 //! something changes (and about once per second while streaming).
 
-use secondscrn_protocol::{ClientStats, CodecCapability, StreamConfig};
+use secondscrn_protocol::{ClientStats, CodecCapability, ResolutionOption, StreamConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::platform::{DisplayInfo, DriverStatus, PipelineStats};
@@ -71,6 +71,10 @@ pub struct SessionInfo {
     pub phase: SessionPhase,
     pub stream: Option<StreamConfig>,
     pub display: Option<DisplayInfo>,
+    /// Resolutions offered for this tablet in its current orientation.
+    pub resolutions: Vec<ResolutionOption>,
+    /// Frame rates offered for this tablet.
+    pub frame_rates: Vec<u32>,
     pub metrics: HostMetrics,
     pub connected_since: u64,
 }
@@ -176,6 +180,9 @@ pub struct ClientSnapshot {
     pub decoders: Vec<CodecCapability>,
     pub settings: ClientSettings,
     pub device_fingerprint_short: String,
+    /// Resolutions the tablet can ask for, from its current panel size.
+    pub resolutions: Vec<ResolutionOption>,
+    pub frame_rates: Vec<u32>,
 }
 
 #[cfg(test)]

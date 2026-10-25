@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use secondscrn_diagnostics::LogBuffer;
 use secondscrn_protocol::{
     ALPN, ClientMessage, ClientStats, CodecCapability, DisplayRequest, HostMessage, InputEvent, Intent, Orientation,
-    PROTOCOL_VERSION, PointerAction, PointerButton, QualityPreset, RejectReason, StreamConfig,
+    PROTOCOL_VERSION, PenAction, PointerAction, PointerButton, QualityPreset, RejectReason, StreamConfig, TouchContact,
 };
 use secondscrn_security::pairing::{ClientPairing, generate_pin};
 use secondscrn_security::tls::{PAIRING_EXPORTER_LABEL, client_config, peer_fingerprint, server_name};
@@ -126,6 +126,8 @@ impl ClientEngine {
             decoders: Vec::new(),
             settings: settings.clone(),
             device_fingerprint_short: identity.fingerprint().short(),
+            resolutions: Vec::new(),
+            frame_rates: Vec::new(),
         });
         let inner = Arc::new(ClientInner {
             platform: platform.clone(),
@@ -176,6 +178,7 @@ impl ClientEngine {
         let changed = lock(&self.inner.display).replace(display) != Some(display);
         if changed {
             self.inner.send_to_session(ClientMessage::DisplayChanged { display });
+            self.inner.publish();
         }
     }
 
@@ -234,6 +237,55 @@ impl ClientEngine {
         let seq = self.inner.input_seq.fetch_add(1, Ordering::Relaxed);
         let event = InputEvent::Scroll { seq, x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0), delta_x, delta_y };
         self.inner.send_to_session(ClientMessage::Input { event });
+    }
+
+    /// A touch frame with every current contact (see [`InputEvent::Touch`]).
+    pub fn send_touch(&self, mut contacts: Vec<TouchContact>) {
+        for c in &mut contacts {
+            c.x = c.x.clamp(0.0, 1.0);
+            c.y = c.y.clamp(0.0, 1.0);
+        }
+        let seq = self.inner.input_seq.fetch_add(1, Ordering::Relaxed);
+        self.inner.send_to_session(ClientMessage::Input { event: InputEvent::Touch { seq, contacts } });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_pen(
+        &self,
+        action: PenAction,
+        x: f32,
+        y: f32,
+        pressure: f32,
+        tilt_x: f32,
+        tilt_y: f32,
+        barrel: bool,
+        eraser: bool,
+    ) {
+        let seq = self.inner.input_seq.fetch_add(1, Ordering::Relaxed);
+        let event = InputEvent::Pen {
+            seq,
+            action,
+            x: x.clamp(0.0, 1.0),
+            y: y.clamp(0.0, 1.0),
+            pressure: pressure.clamp(0.0, 1.0),
+            tilt_x: tilt_x.clamp(-90.0, 90.0),
+            tilt_y: tilt_y.clamp(-90.0, 90.0),
+            barrel,
+            eraser,
+        };
+        self.inner.send_to_session(ClientMessage::Input { event });
+    }
+
+    /// Asks the PC to stream at `scale_percent` of the panel resolution. The
+    /// PC remembers the choice for this tablet.
+    pub fn set_resolution(&self, scale_percent: u32) {
+        self.inner.send_to_session(ClientMessage::SetResolution { scale_percent });
+    }
+
+    /// Asks the PC to stream at most `fps` frames per second (remembered by
+    /// the PC for this tablet).
+    pub fn set_frame_rate(&self, fps: u32) {
+        self.inner.send_to_session(ClientMessage::SetFrameRate { fps });
     }
 
     /// Call after the video surface was recreated.
@@ -384,6 +436,7 @@ impl ClientInner {
                 })
             })
             .collect();
+        let display = *lock(&self.display);
         let st = lock(&self.state);
         let snap = ClientSnapshot {
             phase: st.phase.clone().unwrap_or(ClientPhase::Idle),
@@ -395,6 +448,8 @@ impl ClientInner {
             decoders: lock(&self.decoders).clone(),
             settings,
             device_fingerprint_short: self.identity.fingerprint().short(),
+            resolutions: display.map(|d| d.resolution_options()).unwrap_or_default(),
+            frame_rates: display.map(|d| d.frame_rate_options()).unwrap_or_default(),
         };
         drop(st);
         self.snapshot_tx.send_if_modified(|old| {
@@ -728,9 +783,13 @@ async fn run_connection(
                         }
                     }
                     HostMessage::StreamChanged { stream: s } => {
-                        tracing::info!(width = s.width, height = s.height, "stream reconfigured");
+                        tracing::info!(width = s.width, height = s.height, fps = s.max_fps, "stream reconfigured");
+                        // The decoder only restarts for a new format; a new
+                        // frame rate arrives in-band with the next keyframe.
+                        if (s.codec, s.width, s.height) != (stream.codec, stream.width, stream.height) {
+                            worker.reconfigure(s.clone());
+                        }
                         stream = s;
-                        worker.reconfigure(stream.clone());
                         lock(&inner.state).stream = Some(stream.clone());
                         inner.publish();
                     }

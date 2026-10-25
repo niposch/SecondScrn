@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use secondscrn_protocol::DisplayRequest;
-use secondscrn_session::platform::{DisplayInfo, DisplayLease, PlatformError, PlatformErrorKind};
+use secondscrn_session::platform::{DisplayInfo, DisplayLease, DisplayPlan, PlatformError, PlatformErrorKind};
 
 use crate::display::{self, Mode};
 use crate::vdd;
@@ -35,15 +35,23 @@ fn mode_for(req: &DisplayRequest) -> Mode {
     Mode { width: req.width & !1, height: req.height & !1, refresh_hz: req.refresh_hz.clamp(24, 240) }
 }
 
+/// Every size of the plan the driver should offer: the requested one first.
+fn sizes_for(plan: &DisplayPlan) -> Vec<(u32, u32)> {
+    let mode = mode_for(&plan.request);
+    let mut sizes = vec![(mode.width, mode.height)];
+    sizes.extend(plan.alternatives.iter().map(|&(w, h)| (w & !1, h & !1)).filter(|s| *s != (mode.width, mode.height)));
+    sizes
+}
+
 impl VirtualDisplayManager {
-    pub fn acquire(&self, req: &DisplayRequest, linger: Duration) -> Result<VddLease, PlatformError> {
+    pub fn acquire(&self, plan: &DisplayPlan, linger: Duration) -> Result<VddLease, PlatformError> {
         let generation = {
             let mut st = lock(&self.state);
             st.generation += 1;
             st.leased = true;
             st.generation
         };
-        let result = self.prepare(mode_for(req));
+        let result = self.prepare(plan);
         match result {
             Ok(info) => Ok(VddLease { manager: self.clone(), info, linger, generation }),
             Err(e) => {
@@ -53,19 +61,21 @@ impl VirtualDisplayManager {
         }
     }
 
-    fn prepare(&self, mode: Mode) -> Result<DisplayInfo> {
+    fn prepare(&self, plan: &DisplayPlan) -> Result<DisplayInfo> {
         vdd::require_running()?;
+        let mode = mode_for(&plan.request);
+        let sizes = sizes_for(plan);
         let protected = display::protected_targets()?;
         let xml = vdd::read_settings()?;
         let needs_count = vdd::configured_count(&xml).unwrap_or(0) == 0;
-        let needs_mode = vdd::with_resolution(&xml, mode.width, mode.height, mode.refresh_hz)?.is_some();
+        let needs_mode = vdd::sync_resolutions(&xml, &sizes, mode.refresh_hz)?.is_some();
         let reloaded = needs_count || needs_mode;
         if reloaded {
             reload_detached(&protected, || {
                 if needs_count {
                     vdd::set_display_count(1)?;
                 }
-                if vdd::ensure_resolution(mode.width, mode.height, mode.refresh_hz)? {
+                if vdd::ensure_resolutions(&sizes, mode.refresh_hz)? {
                     vdd::reload()?;
                 }
                 Ok(())
@@ -156,8 +166,12 @@ fn attach_with_mode(mode: Mode, reloaded: bool, protected: &[String]) -> Result<
     while started.elapsed() < patience {
         if let Ok(gdi) = display::attach_vdd(protected) {
             if display::available_modes(&gdi).contains(&mode) {
-                display::set_mode(&gdi, mode)?;
-                return Ok(gdi);
+                // Right after a driver reload the first mode change can
+                // fail while Windows is still settling; retry.
+                match display::set_mode(&gdi, mode) {
+                    Ok(()) => return Ok(gdi),
+                    Err(e) => tracing::debug!(error = %e, "mode change not accepted yet"),
+                }
             }
             last_gdi = Some(gdi);
         }
@@ -188,15 +202,16 @@ impl DisplayLease for VddLease {
         info
     }
 
-    fn reconfigure(&mut self, req: &DisplayRequest) -> Result<DisplayInfo, PlatformError> {
-        let mode = mode_for(req);
+    fn reconfigure(&mut self, plan: &DisplayPlan) -> Result<DisplayInfo, PlatformError> {
+        let mode = mode_for(&plan.request);
+        let sizes = sizes_for(plan);
         let r = (|| -> Result<DisplayInfo> {
             let protected = display::protected_targets()?;
             let xml = vdd::read_settings()?;
-            let reloaded = vdd::with_resolution(&xml, mode.width, mode.height, mode.refresh_hz)?.is_some();
+            let reloaded = vdd::sync_resolutions(&xml, &sizes, mode.refresh_hz)?.is_some();
             if reloaded {
                 reload_detached(&protected, || {
-                    vdd::ensure_resolution(mode.width, mode.height, mode.refresh_hz)?;
+                    vdd::ensure_resolutions(&sizes, mode.refresh_hz)?;
                     vdd::reload()
                 })?;
             }

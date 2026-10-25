@@ -12,8 +12,8 @@ namespace SecondScrn.Views;
 /// </summary>
 public sealed partial class TrayPopup : Window
 {
-    private const int Width = 340;
-    private const int Height = 330;
+    private const int Width = 380;
+    private const int Height = 400;
     private const int Margin = 12;
     private readonly Action _openMain;
 

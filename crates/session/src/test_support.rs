@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use secondscrn_protocol::{Codec, CodecCapability, DeviceInfo, DisplayRequest, InputEvent, StreamConfig};
+use secondscrn_protocol::{Codec, CodecCapability, DeviceInfo, InputEvent, StreamConfig};
 use secondscrn_transport::{EncodedFrame, ReceivedFrame};
 
 use crate::platform::*;
@@ -71,6 +71,10 @@ pub struct FakeHostState {
     pub keyframe_requests: AtomicU64,
     pub frames_produced: AtomicU64,
     pub last_target: Mutex<Option<(u64, u32)>>,
+    /// Every display plan applied, in order.
+    pub plans: Mutex<Vec<DisplayPlan>>,
+    /// Simulates the user changing the mode in the OS display settings.
+    pub external_mode: Mutex<Option<(u32, u32)>>,
 }
 
 pub struct FakeHostPlatform {
@@ -91,11 +95,17 @@ struct FakeLease {
 
 impl DisplayLease for FakeLease {
     fn info(&self) -> DisplayInfo {
-        self.info.clone()
+        let mut info = self.info.clone();
+        if let Some((w, h)) = *self.state.external_mode.lock().unwrap() {
+            (info.width, info.height) = (w, h);
+        }
+        info
     }
-    fn reconfigure(&mut self, r: &DisplayRequest) -> Result<DisplayInfo, PlatformError> {
-        self.info.width = r.width;
-        self.info.height = r.height;
+    fn reconfigure(&mut self, plan: &DisplayPlan) -> Result<DisplayInfo, PlatformError> {
+        self.state.plans.lock().unwrap().push(plan.clone());
+        self.state.external_mode.lock().unwrap().take();
+        self.info.width = plan.request.width;
+        self.info.height = plan.request.height;
         Ok(self.info.clone())
     }
 }
@@ -138,8 +148,10 @@ impl HostPlatform for FakeHostPlatform {
     fn driver_status(&self) -> DriverStatus {
         DriverStatus::NotApplicable
     }
-    fn acquire_display(&self, r: &DisplayRequest, _linger: Duration) -> Result<Box<dyn DisplayLease>, PlatformError> {
+    fn acquire_display(&self, plan: &DisplayPlan, _linger: Duration) -> Result<Box<dyn DisplayLease>, PlatformError> {
         self.state.displays_acquired.fetch_add(1, Ordering::SeqCst);
+        self.state.plans.lock().unwrap().push(plan.clone());
+        let r = &plan.request;
         Ok(Box::new(FakeLease {
             info: DisplayInfo {
                 id: "FAKE1".into(),
@@ -179,7 +191,7 @@ impl HostPlatform for FakeHostPlatform {
         Ok(Box::new(FakePipeline { stop, keyframe, state: self.state.clone() }))
     }
     fn inject_input(&self, _d: &DisplayInfo, e: &InputEvent) -> Result<(), PlatformError> {
-        self.state.inputs.lock().unwrap().push(*e);
+        self.state.inputs.lock().unwrap().push(e.clone());
         Ok(())
     }
 }

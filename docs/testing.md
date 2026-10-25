@@ -10,7 +10,7 @@
 | Security | `security` | identity persistence/corruption, mTLS fingerprints + matching exporters, host pinning, SPAKE2 success/wrong PIN/MITM (different exporters)/identity binding/forged confirmation, trust store |
 | Transport | `transport/tests/loopback.rs` | real ICE + DTLS-SRTP over loopback: H.264 frames byte-exact incl. fragmentation and RTP timing, HEVC keyframe requests, peer-loss detection |
 | Negotiation, adaptation, backoff, settings | `session` unit tests | codec choice, size limits, fps limits, bitrate policy, idle (app-limited) handling, congestion, presets, persistence and corruption recovery |
-| Engines | `session/tests/engines.rs` | host+client over loopback with fake media: pairing, streaming, ordered input, disconnect, PIN-less reconnect, wrong PIN, declined pairing, revocation, host restart → automatic reconnect, unpaired client rejected |
+| Engines | `session/tests/engines.rs` | host+client over loopback with fake media: pairing, streaming, ordered input, disconnect, PIN-less reconnect, wrong PIN, declined pairing, revocation, host restart → automatic reconnect, unpaired client rejected, resolution changes from tablet/PC/Windows settings (incl. rotation keeping the scale), frame rate per tablet, touch and pen events |
 | Colour | `graphics` | BT.709/601 reference values, round-trip error bound, NV12 layout |
 | Network impairment | `transport/tests/impairment.rs` | random loss, burst loss, delay/jitter, bandwidth cap, temporary outage (see below) |
 | Diagnostics | `diagnostics` | redaction of fingerprints/PINs/base64, bounded logs |

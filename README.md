@@ -6,10 +6,11 @@ Display settings, use it like any other screen. Built for programming,
 reading, chat and video next to your main monitor: sharp text, correct
 colours, stable frames.
 
-* **Real second monitor** via the open-source [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver), at the tablet's native resolution and refresh rate, portrait or landscape.
+* **Real second monitor** via the open-source [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver), at the tablet's native resolution and refresh rate, portrait or landscape. Lower resolutions (85–50 %) and frame rates for weak Wi-Fi, switchable from the tablet, the PC app or the Windows display settings.
 * **Hardware video end to end:** Windows Graphics Capture → GPU colour conversion → NVIDIA/AMD/Intel encoder (HEVC, AV1, H.264) → WebRTC → Android MediaCodec onto a native surface. No CPU pixel copies.
 * **Secure on untrusted networks:** device identities, pinned mutual TLS 1.3, SPAKE2 PIN pairing, DTLS-SRTP media, authenticated input only.
-* **Just works:** automatic discovery, one-time pairing, automatic reconnection, tray icon with a quick-control popup, touch-to-mouse input.
+* **Just works:** automatic discovery, one-time pairing, automatic reconnection, tray icon with a quick-control popup, rotation lock.
+* **Touch and pen:** real multi-touch (Windows gestures), pressure-sensitive pen with tilt, hover and eraser; optional touch-as-mouse mode.
 * **Local only:** no accounts, no cloud, no signalling servers.
 
 Core logic is Rust (shared by both apps); the UIs are native WinUI 3 (C#)

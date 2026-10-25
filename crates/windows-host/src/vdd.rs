@@ -108,16 +108,68 @@ fn has_global_refresh(xml: &str, hz: u32) -> bool {
     compact.contains(&format!("<g_refresh_rate>{hz}</g_refresh_rate>"))
 }
 
-/// Returns the XML with `width`x`height` (and `hz` as a global refresh rate)
-/// added, or `None` if nothing needed to change. Existing user entries are
-/// preserved verbatim.
-pub fn with_resolution(xml: &str, width: u32, height: u32, hz: u32) -> Result<Option<String>> {
+/// Marks the entries SecondScrn added, so it can remove them again.
+const MARK: &str = "<!-- added by SecondScrn -->";
+/// At most this many entries of our own. Every entry is multiplied by every
+/// global refresh rate, and VDD 2.35 crashed (access violation, device taken
+/// offline) with ten more entries on top of a dozen; four plus the driver's
+/// defaults has been safe.
+pub const MAX_OWN_ENTRIES: usize = 4;
+
+fn tag_value(s: &str, tag: &str) -> Option<u32> {
+    let open = format!("<{tag}>");
+    let start = s.find(&open)? + open.len();
+    let end = s[start..].find(&format!("</{tag}>"))? + start;
+    s[start..end].trim().parse().ok()
+}
+
+/// Our entries as (byte range including the marker, width, height).
+fn own_entries(xml: &str) -> Vec<(std::ops::Range<usize>, u32, u32)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = xml[from..].find(MARK).map(|i| i + from) {
+        let Some(end) = xml[i..].find("</resolution>").map(|e| i + e + "</resolution>".len()) else { break };
+        let body = &xml[i..end];
+        if let (Some(w), Some(h)) = (tag_value(body, "width"), tag_value(body, "height")) {
+            // Swallow the line break and indentation before the marker too.
+            let start = xml[..i].trim_end().len();
+            out.push((start..end, w, h));
+        }
+        from = end;
+    }
+    out
+}
+
+/// Returns the XML offering `wanted` at `hz`, or `None` if nothing needed to
+/// change. When something must be added (which costs a driver reload),
+/// entries SecondScrn added earlier that are no longer wanted are removed in
+/// the same go, keeping the driver's mode count small; the user's own
+/// entries are preserved verbatim.
+pub fn sync_resolutions(xml: &str, wanted: &[(u32, u32)], hz: u32) -> Result<Option<String>> {
+    let wanted = &wanted[..wanted.len().min(MAX_OWN_ENTRIES)];
     let mut out = xml.to_string();
     let mut changed = false;
-    if !has_resolution(&out, width, height) {
+    let missing = wanted.iter().any(|&(w, h)| !has_resolution(xml, w, h));
+    for (range, w, h) in own_entries(xml).into_iter().rev().filter(|_| missing) {
+        if !wanted.contains(&(w, h)) {
+            out.replace_range(range, "");
+            changed = true;
+        }
+    }
+    for &(width, height) in wanted {
+        if has_resolution(&out, width, height) {
+            continue;
+        }
         let idx = out.rfind("</resolutions>").context("vdd_settings.xml has no <resolutions> section")?;
+        let idx = out[..idx].trim_end().len();
         let entry = format!(
-            "    <resolution>\n            <width>{width}</width>\n            <height>{height}</height>\n            <refresh_rate>{hz}</refresh_rate>\n        </resolution>\n    "
+            "
+    {MARK}
+    <resolution>
+      <width>{width}</width>
+      <height>{height}</height>
+      <refresh_rate>{hz}</refresh_rate>
+    </resolution>"
         );
         out.insert_str(idx, &entry);
         changed = true;
@@ -125,24 +177,30 @@ pub fn with_resolution(xml: &str, width: u32, height: u32, hz: u32) -> Result<Op
     if !has_global_refresh(&out, hz)
         && let Some(idx) = out.find("</global>")
     {
-        out.insert_str(idx, &format!("    <g_refresh_rate>{hz}</g_refresh_rate>\n\t"));
+        out.insert_str(
+            idx,
+            &format!(
+                "    <g_refresh_rate>{hz}</g_refresh_rate>
+	"
+            ),
+        );
         changed = true;
     }
     Ok(changed.then_some(out))
 }
 
-/// Makes sure the driver offers `width`x`height`@`hz`. Returns true if the
-/// settings changed (the driver must then be reloaded).
-pub fn ensure_resolution(width: u32, height: u32, hz: u32) -> Result<bool> {
+/// Makes the driver offer `wanted` at `hz` (see [`sync_resolutions`]).
+/// Returns true if the settings changed (the driver must then be reloaded).
+pub fn ensure_resolutions(wanted: &[(u32, u32)], hz: u32) -> Result<bool> {
     let path = settings_path();
     let xml = std::fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
-    match with_resolution(&xml, width, height, hz)? {
+    match sync_resolutions(&xml, wanted, hz)? {
         None => Ok(false),
         Some(new) => {
             std::fs::write(&path, new).with_context(|| {
                 format!("cannot update {} (run the SecondScrn driver setup to fix permissions)", path.display())
             })?;
-            tracing::info!(width, height, hz, "added resolution to the virtual display driver");
+            tracing::info!(?wanted, hz, "updated the virtual display driver's resolutions");
             Ok(true)
         }
     }
@@ -204,32 +262,57 @@ mod tests {
 
     #[test]
     fn adds_missing_resolution_once() {
-        let new = with_resolution(XML, 2560, 1600, 60).unwrap().unwrap();
+        let new = sync_resolutions(XML, &[(2560, 1600)], 60).unwrap().unwrap();
         assert!(has_resolution(&new, 2560, 1600));
         assert!(has_resolution(&new, 1920, 1080), "existing entries kept");
-        assert!(with_resolution(&new, 2560, 1600, 60).unwrap().is_none(), "idempotent");
+        assert!(sync_resolutions(&new, &[(2560, 1600)], 60).unwrap().is_none(), "idempotent");
         assert_eq!(configured_count(&new), Some(1));
-        // The result is still well-formed enough for the driver's parser.
         assert_eq!(new.matches("<resolution>").count(), 2);
         assert_eq!(new.matches("</resolution>").count(), 2);
     }
 
     #[test]
     fn adds_missing_global_refresh_rate() {
-        assert!(with_resolution(XML, 1920, 1080, 60).unwrap().is_none());
-        let new = with_resolution(XML, 1920, 1080, 120).unwrap().unwrap();
+        assert!(sync_resolutions(XML, &[(1920, 1080)], 60).unwrap().is_none());
+        let new = sync_resolutions(XML, &[(1920, 1080)], 120).unwrap().unwrap();
         assert!(has_global_refresh(&new, 120));
         assert!(has_global_refresh(&new, 60));
     }
 
     #[test]
+    fn replaces_own_entries_and_keeps_the_users() {
+        let a = sync_resolutions(XML, &[(1920, 1080), (1600, 1000), (1000, 1600)], 60).unwrap().unwrap();
+        assert_eq!(a.matches("<resolution>").count(), 3, "the user's 1920x1080 is not duplicated");
+        // Switching to another size drops our previous entries.
+        let b = sync_resolutions(&a, &[(800, 500), (500, 800)], 60).unwrap().unwrap();
+        assert!(!has_resolution(&b, 1600, 1000) && !has_resolution(&b, 1000, 1600));
+        assert!(has_resolution(&b, 800, 500) && has_resolution(&b, 500, 800));
+        assert!(has_resolution(&b, 1920, 1080), "the user's entry stays");
+        assert_eq!(b.matches(MARK).count(), 2);
+        assert_eq!(b.matches("<resolution>").count(), b.matches("</resolution>").count());
+        // Sizes already offered need no change (and no reload)...
+        assert!(sync_resolutions(&b, &[(1920, 1080)], 60).unwrap().is_none());
+        // ...the next addition prunes the stale ones.
+        let c = sync_resolutions(&b, &[(1920, 1080), (1080, 1920)], 60).unwrap().unwrap();
+        assert_eq!(c.matches(MARK).count(), 1);
+        assert!(!has_resolution(&c, 800, 500));
+    }
+
+    #[test]
+    fn never_adds_more_than_the_limit() {
+        let many: Vec<_> = (0..10).map(|i| (1000 + i * 2, 700)).collect();
+        let new = sync_resolutions(XML, &many, 60).unwrap().unwrap();
+        assert_eq!(new.matches(MARK).count(), MAX_OWN_ENTRIES);
+    }
+
+    #[test]
     fn portrait_is_a_distinct_resolution() {
-        let new = with_resolution(XML, 1080, 1920, 60).unwrap().unwrap();
+        let new = sync_resolutions(XML, &[(1080, 1920)], 60).unwrap().unwrap();
         assert!(has_resolution(&new, 1080, 1920));
     }
 
     #[test]
     fn rejects_unexpected_format() {
-        assert!(with_resolution("<vdd_settings/>", 1, 1, 60).is_err());
+        assert!(sync_resolutions("<vdd_settings/>", &[(1, 1)], 60).is_err());
     }
 }

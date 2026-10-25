@@ -7,7 +7,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use secondscrn_protocol::{DisplayRequest, Orientation, PointerAction, PointerButton, QualityPreset};
+use secondscrn_protocol::{
+    DisplayRequest, Orientation, PenAction, PointerAction, PointerButton, QualityPreset, TouchContact,
+};
 use secondscrn_security::{SecretProtector, SecurityError};
 use secondscrn_session::snapshot::{ClientPhase, ClientSnapshot};
 use secondscrn_session::{ClientConfig, ClientEngine, ConnectTarget};
@@ -76,6 +78,32 @@ pub enum PointerKind {
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum PenKind {
+    Hover,
+    Down,
+    Move,
+    Up,
+    Leave,
+    Cancel,
+}
+
+/// One finger of a touch frame, in normalised (0..1) coordinates.
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct TouchPoint {
+    pub id: u32,
+    pub kind: PointerKind,
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ResolutionChoice {
+    pub scale_percent: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum Health {
     Unknown,
     Good,
@@ -102,6 +130,8 @@ pub struct StreamInfo {
     pub width: u32,
     pub height: u32,
     pub max_fps: u32,
+    /// Percentage of the panel resolution; 0 = a mode chosen on the PC.
+    pub scale_percent: u32,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -127,6 +157,12 @@ pub struct ClientState {
     pub device_fingerprint_short: String,
     pub preset: Preset,
     pub touch_input: bool,
+    pub touch_as_mouse: bool,
+    pub rotation_locked: bool,
+    /// Resolutions the PC can stream for this screen, largest first.
+    pub resolutions: Vec<ResolutionChoice>,
+    /// Frame rates this screen can show; `stream.max_fps` is the current one.
+    pub frame_rates: Vec<u32>,
 }
 
 fn preset_to(p: Preset) -> QualityPreset {
@@ -217,6 +253,7 @@ pub fn to_ffi(s: &ClientSnapshot) -> ClientState {
             width: c.width,
             height: c.height,
             max_fps: c.max_fps,
+            scale_percent: c.scale_percent,
         }),
         metrics: Metrics {
             render_fps: m.render_fps,
@@ -245,6 +282,23 @@ pub fn to_ffi(s: &ClientSnapshot) -> ClientState {
         device_fingerprint_short: s.device_fingerprint_short.clone(),
         preset: preset_from(s.settings.preset),
         touch_input: s.settings.touch_input,
+        touch_as_mouse: s.settings.touch_as_mouse,
+        rotation_locked: s.settings.rotation_locked,
+        resolutions: s
+            .resolutions
+            .iter()
+            .map(|o| ResolutionChoice { scale_percent: o.scale_percent, width: o.width, height: o.height })
+            .collect(),
+        frame_rates: s.frame_rates.clone(),
+    }
+}
+
+fn pointer_action(kind: PointerKind) -> PointerAction {
+    match kind {
+        PointerKind::Down => PointerAction::Down,
+        PointerKind::Move => PointerAction::Move,
+        PointerKind::Up => PointerAction::Up,
+        PointerKind::Cancel => PointerAction::Cancel,
     }
 }
 
@@ -363,14 +417,65 @@ impl SecondScrnClient {
 
     /// Normalised (0..1) pointer position on the streamed display.
     pub fn pointer(&self, kind: PointerKind, x: f32, y: f32, secondary: bool) {
-        let action = match kind {
-            PointerKind::Down => PointerAction::Down,
-            PointerKind::Move => PointerAction::Move,
-            PointerKind::Up => PointerAction::Up,
-            PointerKind::Cancel => PointerAction::Cancel,
-        };
+        let action = pointer_action(kind);
         let button = if secondary { PointerButton::Secondary } else { PointerButton::Primary };
         self.engine.send_pointer(action, button, x, y);
+    }
+
+    /// A touch frame: every finger currently on the screen.
+    pub fn touch(&self, points: Vec<TouchPoint>) {
+        let contacts = points
+            .into_iter()
+            .map(|p| TouchContact { id: p.id, action: pointer_action(p.kind), x: p.x, y: p.y })
+            .collect();
+        self.engine.send_touch(contacts);
+    }
+
+    /// Stylus input. Tilt in degrees (-90..90, positive = right / towards
+    /// the user), pressure 0..1.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pen(
+        &self,
+        kind: PenKind,
+        x: f32,
+        y: f32,
+        pressure: f32,
+        tilt_x: f32,
+        tilt_y: f32,
+        barrel: bool,
+        eraser: bool,
+    ) {
+        let action = match kind {
+            PenKind::Hover => PenAction::Hover,
+            PenKind::Down => PenAction::Down,
+            PenKind::Move => PenAction::Move,
+            PenKind::Up => PenAction::Up,
+            PenKind::Leave => PenAction::Leave,
+            PenKind::Cancel => PenAction::Cancel,
+        };
+        self.engine.send_pen(action, x, y, pressure, tilt_x, tilt_y, barrel, eraser);
+    }
+
+    /// Asks the PC for another stream resolution (percentage of the panel).
+    pub fn set_resolution(&self, scale_percent: u32) {
+        self.engine.set_resolution(scale_percent);
+    }
+
+    /// Asks the PC to stream at most `fps` frames per second.
+    pub fn set_frame_rate(&self, fps: u32) {
+        self.engine.set_frame_rate(fps);
+    }
+
+    pub fn set_touch_as_mouse(&self, enabled: bool) {
+        let mut s = self.engine.snapshot().settings;
+        s.touch_as_mouse = enabled;
+        self.engine.update_settings(s);
+    }
+
+    pub fn set_rotation_locked(&self, locked: bool) {
+        let mut s = self.engine.snapshot().settings;
+        s.rotation_locked = locked;
+        self.engine.update_settings(s);
     }
 
     pub fn scroll(&self, x: f32, y: f32, delta_x: f32, delta_y: f32) {

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub mod framing;
 
 /// Bumped on incompatible protocol changes.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Default TCP port of the host's control listener.
 pub const DEFAULT_CONTROL_PORT: u16 = 47800;
 /// mDNS / DNS-SD service type announced by hosts.
@@ -158,6 +158,66 @@ pub struct DisplayRequest {
     pub orientation: Orientation,
 }
 
+/// Resolutions offered for a tablet, as percentages of its native panel.
+/// Lower ones trade sharpness for bandwidth on weak networks; all keep the
+/// panel's aspect ratio so the picture still fills the screen.
+pub const RESOLUTION_SCALES: [u32; 5] = [100, 85, 75, 67, 50];
+
+/// Frame rates offered (those up to the tablet's refresh rate).
+pub const FRAME_RATES: [u32; 5] = [30, 60, 90, 120, 144];
+
+impl DisplayRequest {
+    /// This request at `percent` of its size (even dimensions, as encoders
+    /// and NV12 need). Density scales along so Windows picks a similar UI size.
+    pub fn scaled(&self, percent: u32) -> DisplayRequest {
+        let p = percent.clamp(25, 100);
+        let scale = |v: u32| ((v as u64 * p as u64 + 50) / 100) as u32 & !1;
+        DisplayRequest {
+            width: scale(self.width).max(2),
+            height: scale(self.height).max(2),
+            dpi: scale(self.dpi).max(72),
+            ..*self
+        }
+    }
+
+    /// The offered resolutions for this panel, largest first.
+    pub fn resolution_options(&self) -> Vec<ResolutionOption> {
+        RESOLUTION_SCALES
+            .iter()
+            .map(|&p| {
+                let r = self.scaled(p);
+                ResolutionOption { scale_percent: p, width: r.width, height: r.height }
+            })
+            .collect()
+    }
+
+    /// Frame rates the tablet can show: the offered ones up to its refresh
+    /// rate, plus the refresh rate itself.
+    pub fn frame_rate_options(&self) -> Vec<u32> {
+        let mut rates: Vec<u32> = FRAME_RATES.into_iter().filter(|r| *r <= self.refresh_hz).collect();
+        if self.refresh_hz >= 24 && !rates.contains(&self.refresh_hz) {
+            rates.push(self.refresh_hz);
+        }
+        rates
+    }
+
+    /// The offered scale that produces `width`x`height`, or 0 for any other
+    /// mode (e.g. one picked in the Windows display settings).
+    pub fn scale_of(&self, width: u32, height: u32) -> u32 {
+        self.resolution_options()
+            .into_iter()
+            .find(|o| o.width.abs_diff(width) <= 2 && o.height.abs_diff(height) <= 2)
+            .map_or(0, |o| o.scale_percent)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolutionOption {
+    pub scale_percent: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// User-selectable trade-off between sharpness and bandwidth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -189,6 +249,14 @@ pub struct StreamConfig {
     /// Initial target bitrate in bits per second.
     pub initial_bitrate_bps: u64,
     pub encoder: String,
+    /// The stream size as a percentage of the tablet's panel (one of
+    /// [`RESOLUTION_SCALES`]), or 0 for another mode chosen on the PC.
+    #[serde(default = "full_scale")]
+    pub scale_percent: u32,
+}
+
+fn full_scale() -> u32 {
+    100
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,11 +276,35 @@ pub enum PointerButton {
     Middle,
 }
 
+/// One finger in a [`InputEvent::Touch`] frame.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TouchContact {
+    /// Stable for the lifetime of the contact (Android pointer id).
+    pub id: u32,
+    pub action: PointerAction,
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PenAction {
+    /// In range above the screen, not touching.
+    Hover,
+    Down,
+    Move,
+    Up,
+    /// Left the detection range.
+    Leave,
+    Cancel,
+}
+
 /// Input from the tablet. Coordinates are normalised to the streamed display
 /// (0.0..=1.0) so they stay valid across resolution changes.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputEvent {
+    /// Mouse input (a mouse on the tablet, or touch in mouse mode).
     Pointer {
         /// Monotonic sequence number; the host drops out-of-order events.
         seq: u64,
@@ -229,12 +321,34 @@ pub enum InputEvent {
         delta_x: f32,
         delta_y: f32,
     },
+    /// A touch frame: every finger currently down (plus those lifting in
+    /// this frame), injected as real touch so Windows handles gestures.
+    /// Fingers missing from a frame are cancelled.
+    Touch { seq: u64, contacts: Vec<TouchContact> },
+    /// Stylus input with pressure and tilt.
+    Pen {
+        seq: u64,
+        action: PenAction,
+        x: f32,
+        y: f32,
+        /// 0.0..=1.0.
+        pressure: f32,
+        /// Degrees, -90..=90; positive tilts right / towards the user.
+        tilt_x: f32,
+        tilt_y: f32,
+        /// Barrel button held (right-click in Windows).
+        barrel: bool,
+        eraser: bool,
+    },
 }
 
 impl InputEvent {
     pub fn seq(&self) -> u64 {
         match self {
-            InputEvent::Pointer { seq, .. } | InputEvent::Scroll { seq, .. } => *seq,
+            InputEvent::Pointer { seq, .. }
+            | InputEvent::Scroll { seq, .. }
+            | InputEvent::Touch { seq, .. }
+            | InputEvent::Pen { seq, .. } => *seq,
         }
     }
 }
@@ -329,6 +443,15 @@ pub enum ClientMessage {
     },
     SetPreset {
         preset: QualityPreset,
+    },
+    /// Stream at this percentage of the panel resolution (see
+    /// [`RESOLUTION_SCALES`]).
+    SetResolution {
+        scale_percent: u32,
+    },
+    /// Stream at most this many frames per second.
+    SetFrameRate {
+        fps: u32,
     },
     Ping {
         nonce: u64,
@@ -452,6 +575,30 @@ mod tests {
                 y: 0.5,
             },
         });
+        roundtrip_client(ClientMessage::Input {
+            event: InputEvent::Touch {
+                seq: 8,
+                contacts: vec![
+                    TouchContact { id: 0, action: PointerAction::Move, x: 0.1, y: 0.2 },
+                    TouchContact { id: 1, action: PointerAction::Down, x: 0.3, y: 0.4 },
+                ],
+            },
+        });
+        roundtrip_client(ClientMessage::Input {
+            event: InputEvent::Pen {
+                seq: 9,
+                action: PenAction::Hover,
+                x: 0.5,
+                y: 0.5,
+                pressure: 0.0,
+                tilt_x: -12.0,
+                tilt_y: 30.0,
+                barrel: false,
+                eraser: true,
+            },
+        });
+        roundtrip_client(ClientMessage::SetResolution { scale_percent: 50 });
+        roundtrip_client(ClientMessage::SetFrameRate { fps: 90 });
         roundtrip_client(ClientMessage::Stats { stats: ClientStats::default() });
         roundtrip_client(ClientMessage::Goodbye);
     }
@@ -469,6 +616,7 @@ mod tests {
                 color: ColorInfo::SDR_BT709_LIMITED,
                 initial_bitrate_bps: 20_000_000,
                 encoder: "test".into(),
+                scale_percent: 75,
             },
         });
     }
@@ -486,6 +634,38 @@ mod tests {
     fn unknown_fields_are_ignored() {
         let msg: ClientMessage = serde_json::from_str(r#"{"type":"ping","nonce":1,"future_field":true}"#).unwrap();
         assert_eq!(msg, ClientMessage::Ping { nonce: 1 });
+    }
+
+    #[test]
+    fn resolution_options_keep_aspect_and_even_sizes() {
+        let panel = DisplayRequest {
+            width: 3200,
+            height: 2136,
+            refresh_hz: 120,
+            dpi: 345,
+            orientation: Orientation::Landscape,
+        };
+        let opts = panel.resolution_options();
+        assert_eq!(opts[0], ResolutionOption { scale_percent: 100, width: 3200, height: 2136 });
+        assert_eq!(opts.last().unwrap(), &ResolutionOption { scale_percent: 50, width: 1600, height: 1068 });
+        for o in &opts {
+            assert!(o.width % 2 == 0 && o.height % 2 == 0, "{o:?}");
+            let aspect = o.width as f32 / o.height as f32;
+            assert!((aspect - 3200.0 / 2136.0).abs() < 0.01, "{o:?}");
+        }
+        assert_eq!(panel.scale_of(2400, 1602), 75);
+        assert_eq!(panel.scale_of(1920, 1080), 0);
+        assert_eq!(panel.scaled(50).refresh_hz, 120);
+        assert_eq!(panel.frame_rate_options(), vec![30, 60, 90, 120]);
+        let odd = DisplayRequest { refresh_hz: 165, ..panel };
+        assert_eq!(odd.frame_rate_options(), vec![30, 60, 90, 120, 144, 165]);
+    }
+
+    #[test]
+    fn stream_config_without_scale_defaults_to_native() {
+        let json = r#"{"codec":"h264","width":1,"height":1,"max_fps":60,"color":{"primaries":"bt709","transfer":"bt709","matrix":"bt709","range":"limited"},"initial_bitrate_bps":1,"encoder":"x"}"#;
+        let c: StreamConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.scale_percent, 100);
     }
 
     #[test]

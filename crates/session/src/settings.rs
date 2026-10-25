@@ -26,6 +26,22 @@ pub struct DevicePreferences {
     pub preset: Option<QualityPreset>,
     /// Allow this tablet to reconnect automatically without UI interaction.
     pub allow_auto_reconnect: bool,
+    /// Stream resolution as a percentage of the panel; `None` = native.
+    pub resolution_scale: Option<u32>,
+    /// Frame rate for this tablet; `None` = the global `max_fps`.
+    pub max_fps: Option<u32>,
+}
+
+impl DevicePreferences {
+    /// The effective scale, snapped to an offered one.
+    pub fn scale_percent(&self) -> u32 {
+        snap_scale(self.resolution_scale.unwrap_or(100))
+    }
+}
+
+/// The offered resolution scale closest to `percent`.
+pub fn snap_scale(percent: u32) -> u32 {
+    secondscrn_protocol::RESOLUTION_SCALES.into_iter().min_by_key(|s| s.abs_diff(percent)).unwrap_or(100)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,10 +97,12 @@ impl Default for HostSettings {
 
 impl HostSettings {
     pub fn device(&self, fingerprint_hex: &str) -> DevicePreferences {
-        self.devices
-            .get(fingerprint_hex)
-            .cloned()
-            .unwrap_or(DevicePreferences { preset: None, allow_auto_reconnect: true })
+        self.devices.get(fingerprint_hex).cloned().unwrap_or(DevicePreferences {
+            preset: None,
+            allow_auto_reconnect: true,
+            resolution_scale: None,
+            max_fps: None,
+        })
     }
 
     /// Clamps values a hand-edited file could make unusable.
@@ -121,8 +139,13 @@ pub struct ClientSettings {
     pub preferred_codec: Option<Codec>,
     pub known_hosts: Vec<KnownHost>,
     pub keep_screen_on: bool,
-    /// Send touches to the PC as mouse input.
+    /// Send touch and pen input to the PC.
     pub touch_input: bool,
+    /// Translate touch into mouse clicks and scrolling instead of sending
+    /// real touch (for apps that handle touch badly).
+    pub touch_as_mouse: bool,
+    /// Keep the current screen orientation while streaming.
+    pub rotation_locked: bool,
 }
 
 impl Default for ClientSettings {
@@ -135,6 +158,8 @@ impl Default for ClientSettings {
             known_hosts: Vec::new(),
             keep_screen_on: true,
             touch_input: true,
+            touch_as_mouse: false,
+            rotation_locked: false,
         }
     }
 }
@@ -194,7 +219,12 @@ mod tests {
         let mut s = HostSettings { preset: QualityPreset::Sharp, max_fps: 30, ..Default::default() };
         s.devices.insert(
             "ab".into(),
-            DevicePreferences { preset: Some(QualityPreset::LowBandwidth), allow_auto_reconnect: false },
+            DevicePreferences {
+                preset: Some(QualityPreset::LowBandwidth),
+                allow_auto_reconnect: false,
+                resolution_scale: Some(75),
+                max_fps: Some(120),
+            },
         );
         save(&path, &s).unwrap();
         let back: HostSettings = load(&path);

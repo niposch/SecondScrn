@@ -151,6 +151,78 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
+    // ---- Resolution of the connected tablet -------------------------------
+
+    private string[] _resolutionLabels = [];
+
+    /// <summary>Offered sizes; the same array instance while they don't change,
+    /// so the combo boxes keep their selection across snapshots.</summary>
+    public string[] ResolutionLabels
+    {
+        get
+        {
+            var labels = _s?.Session?.Resolutions.Select(r => r.Label).ToArray() ?? [];
+            if (!labels.SequenceEqual(_resolutionLabels)) _resolutionLabels = labels;
+            return _resolutionLabels;
+        }
+    }
+
+    public int ResolutionIndex
+    {
+        get => _s?.Session is { } s ? s.Resolutions.ToList().FindIndex(r => r.ScalePercent == s.ScalePercent) : -1;
+        set
+        {
+            if (_updating || _s?.Session is not { } s || value < 0 || value >= s.Resolutions.Count() || value == ResolutionIndex) return;
+            try
+            {
+                _host.Host.SetResolution(s.Resolutions.ElementAt(value).ScalePercent);
+            }
+            catch (Exception)
+            {
+                // The tablet disconnected meanwhile.
+            }
+        }
+    }
+
+    private string[] _frameRateLabels = [];
+
+    public string[] FrameRateLabels
+    {
+        get
+        {
+            var labels = _s?.Session?.FrameRates.Select(r => $"{r} fps").ToArray() ?? [];
+            if (!labels.SequenceEqual(_frameRateLabels)) _frameRateLabels = labels;
+            return _frameRateLabels;
+        }
+    }
+
+    public int FrameRateIndex
+    {
+        get => _s?.Session is { } s ? s.FrameRates.ToList().IndexOf(s.MaxFps) : -1;
+        set
+        {
+            if (_updating || _s?.Session is not { } s || value < 0 || value >= s.FrameRates.Count() || value == FrameRateIndex) return;
+            try
+            {
+                _host.Host.SetFrameRate(s.FrameRates.ElementAt(value));
+            }
+            catch (Exception)
+            {
+                // The tablet disconnected meanwhile.
+            }
+        }
+    }
+
+    public bool CanChangeResolution => _s?.Session is { Phase: Phase.Streaming } s && s.Resolutions.Any();
+
+    public string ResolutionHint => _s?.Session switch
+    {
+        null => "Available while a tablet is connected.",
+        { ScalePercent: 0 } s => $"{s.Width} × {s.Height} was chosen in the Windows display settings. Pick a size to return to one that fills the tablet.",
+        _ => "Lower resolutions need less bandwidth (helpful on weak Wi-Fi); the tablet scales the picture up. " +
+             "The choice is remembered for this tablet and can also be changed on the tablet.",
+    };
+
     public string? LastError => _s?.LastError;
     public bool HasError => !string.IsNullOrEmpty(_s?.LastError);
 

@@ -14,10 +14,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import uniffi.secondscrn_client.ClientInit
 import uniffi.secondscrn_client.ClientListener
 import uniffi.secondscrn_client.ClientState
+import uniffi.secondscrn_client.PenKind
 import uniffi.secondscrn_client.Phase
 import uniffi.secondscrn_client.PointerKind
 import uniffi.secondscrn_client.Preset
 import uniffi.secondscrn_client.SecondScrnClient
+import uniffi.secondscrn_client.TouchPoint
 
 /**
  * Owns the Rust client and adapts it to Android: state as a StateFlow,
@@ -91,11 +93,18 @@ class ClientRepository(private val context: Context) {
     fun setAutoReconnect(fingerprint: String, enabled: Boolean) = client.setHostAutoReconnect(fingerprint, enabled)
     fun setPreset(preset: Preset) = client.setPreset(preset)
     fun setTouchInput(enabled: Boolean) = client.setTouchInput(enabled)
+    fun setTouchAsMouse(enabled: Boolean) = client.setTouchAsMouse(enabled)
+    fun setRotationLocked(locked: Boolean) = client.setRotationLocked(locked)
+    fun setResolution(scalePercent: Int) = client.setResolution(scalePercent.toUInt())
+    fun setFrameRate(fps: Int) = client.setFrameRate(fps.toUInt())
     fun setDisplay(width: Int, height: Int, refreshHz: Int, dpi: Int) =
         client.setDisplay(width.toUInt(), height.toUInt(), refreshHz.toUInt(), dpi.toUInt())
 
     fun pointer(kind: PointerKind, x: Float, y: Float, secondary: Boolean = false) = client.pointer(kind, x, y, secondary)
     fun scroll(x: Float, y: Float, dx: Float, dy: Float) = client.scroll(x, y, dx, dy)
+    fun touch(points: List<TouchPoint>) = client.touch(points)
+    fun pen(kind: PenKind, x: Float, y: Float, pressure: Float, tiltX: Float, tiltY: Float, barrel: Boolean, eraser: Boolean) =
+        client.pen(kind, x, y, pressure, tiltX, tiltY, barrel, eraser)
     fun requestKeyframe() = client.requestKeyframe()
 
     /** Writes a redacted diagnostic report and returns the file. */

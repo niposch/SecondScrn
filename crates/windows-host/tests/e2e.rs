@@ -15,8 +15,11 @@ use std::time::{Duration, Instant};
 use secondscrn_devtools::RecordingPlatform;
 use secondscrn_host::platform::{DisplaySource, WindowsHostPlatform};
 use secondscrn_host::{capture, display, input};
-use secondscrn_protocol::{DisplayRequest, Orientation, PointerAction, PointerButton};
+use secondscrn_protocol::{
+    DisplayRequest, InputEvent, Orientation, PenAction, PointerAction, PointerButton, TouchContact,
+};
 use secondscrn_security::UnprotectedForTests;
+use secondscrn_session::platform::{DisplayLease, DisplayPlan};
 use secondscrn_session::settings::HostSettings;
 use secondscrn_session::snapshot::{ClientPhase, SessionPhase};
 use secondscrn_session::{ClientConfig, ClientEngine, ConnectTarget, HostConfig, HostEngine};
@@ -157,10 +160,10 @@ fn input_mapping_on_virtual_monitor() {
     let req =
         DisplayRequest { width: 1920, height: 1200, refresh_hz: 60, dpi: 96, orientation: Orientation::Landscape };
     let mgr = secondscrn_host::virtual_display::VirtualDisplayManager::default();
-    let lease = mgr.acquire(&req, Duration::ZERO).unwrap();
-    use secondscrn_session::platform::DisplayLease;
+    let lease = mgr.acquire(&DisplayPlan { request: req, alternatives: Vec::new() }, Duration::ZERO).unwrap();
     let info = lease.info();
     let monitor = capture::monitor_by_device(&info.id).unwrap();
+    let mut injector = input::Injector::default();
     let mut saved = POINT::default();
     unsafe { GetCursorPos(&mut saved).unwrap() };
     let mut results = Vec::new();
@@ -172,7 +175,7 @@ fn input_mapping_on_virtual_monitor() {
             x,
             y,
         };
-        if let Err(e) = input::inject(&info.id, &ev) {
+        if let Err(e) = injector.inject(&info.id, &ev) {
             eprintln!("skipping: input injection blocked: {e}");
             unsafe { SetCursorPos(saved.x, saved.y).unwrap() };
             return;
@@ -195,4 +198,61 @@ fn input_mapping_on_virtual_monitor() {
         let ey = r.top + (y * (r.bottom - r.top - 1) as f32).round() as i32;
         assert!((pos.x - ex).abs() <= 2 && (pos.y - ey).abs() <= 2, "({x},{y}) -> {pos:?}, expected ({ex}, {ey})");
     }
+}
+
+/// Real touch and pen through synthetic pointer devices: Windows must accept
+/// every frame of a two-finger gesture and a pen stroke with hover. Taps on
+/// the (empty) virtual monitor only.
+#[test]
+#[ignore]
+fn touch_and_pen_injection_on_virtual_monitor() {
+    secondscrn_host::init_dpi_awareness();
+    let req =
+        DisplayRequest { width: 1920, height: 1200, refresh_hz: 60, dpi: 96, orientation: Orientation::Landscape };
+    let mgr = secondscrn_host::virtual_display::VirtualDisplayManager::default();
+    let lease = mgr.acquire(&DisplayPlan { request: req, alternatives: Vec::new() }, Duration::ZERO).unwrap();
+    let id = lease.info().id;
+    let mut injector = input::Injector::default();
+    let c = |id, action, x: f32| TouchContact { id, action, x, y: 0.9 };
+    let frames = [
+        vec![c(0, PointerAction::Down, 0.90)],
+        vec![c(0, PointerAction::Move, 0.91), c(1, PointerAction::Down, 0.95)],
+        vec![c(0, PointerAction::Move, 0.92), c(1, PointerAction::Move, 0.96)],
+        vec![c(0, PointerAction::Up, 0.92), c(1, PointerAction::Move, 0.96)],
+        vec![c(1, PointerAction::Up, 0.96)],
+    ];
+    for (seq, contacts) in frames.into_iter().enumerate() {
+        let ev = InputEvent::Touch { seq: seq as u64 + 1, contacts };
+        if let Err(e) = injector.inject(&id, &ev) {
+            panic!("touch frame {seq} rejected: {e:#}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        injector.idle(); // held contacts are refreshed without errors
+    }
+    let pen = |action, pressure| InputEvent::Pen {
+        seq: 100,
+        action,
+        x: 0.9,
+        y: 0.1,
+        pressure,
+        tilt_x: 20.0,
+        tilt_y: -10.0,
+        barrel: false,
+        eraser: false,
+    };
+    for (action, p) in [
+        (PenAction::Hover, 0.0),
+        (PenAction::Down, 0.3),
+        (PenAction::Move, 0.8),
+        (PenAction::Up, 0.0),
+        (PenAction::Hover, 0.0),
+        (PenAction::Leave, 0.0),
+    ] {
+        if let Err(e) = injector.inject(&id, &pen(action, p)) {
+            panic!("pen {action:?} rejected: {e:#}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    injector.release_all();
+    drop(lease);
 }

@@ -67,12 +67,39 @@ pub struct DisplayInfo {
     pub is_virtual: bool,
 }
 
+/// The mode a session wants, plus the sizes the user is most likely to switch
+/// to next (the other orientation, the native size). The platform can make
+/// those available up front: VDD needs a driver reload, which briefly removes
+/// the monitor, for every new mode, but it also crashes when offered too many
+/// modes, so the list stays short.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayPlan {
+    pub request: DisplayRequest,
+    pub alternatives: Vec<(u32, u32)>,
+}
+
+impl DisplayPlan {
+    /// `native` at `scale_percent`; alternatives are the rotated size and
+    /// the native size in both orientations.
+    pub fn new(native: &DisplayRequest, scale_percent: u32) -> Self {
+        let request = native.scaled(scale_percent);
+        let mut alternatives = Vec::new();
+        for size in [(request.height, request.width), (native.width, native.height), (native.height, native.width)] {
+            if size != (request.width, request.height) && !alternatives.contains(&size) {
+                alternatives.push(size);
+            }
+        }
+        DisplayPlan { request, alternatives }
+    }
+}
+
 /// A display reserved for one session. Dropping it releases the display; the
 /// platform may keep it attached for the linger time given at acquisition.
 pub trait DisplayLease: Send {
     fn info(&self) -> DisplayInfo;
-    /// Changes the mode (e.g. after the tablet rotated).
-    fn reconfigure(&mut self, request: &DisplayRequest) -> Result<DisplayInfo, PlatformError>;
+    /// Changes the mode (the tablet rotated, or the user picked another
+    /// resolution).
+    fn reconfigure(&mut self, plan: &DisplayPlan) -> Result<DisplayInfo, PlatformError>;
 }
 
 /// Receives the output of a running capture/encode pipeline.
@@ -108,11 +135,7 @@ pub trait HostPlatform: Send + Sync + 'static {
     /// Hardware encoders verified to work, one entry per codec.
     fn encoders(&self) -> Vec<CodecCapability>;
     fn driver_status(&self) -> DriverStatus;
-    fn acquire_display(
-        &self,
-        request: &DisplayRequest,
-        linger: Duration,
-    ) -> Result<Box<dyn DisplayLease>, PlatformError>;
+    fn acquire_display(&self, plan: &DisplayPlan, linger: Duration) -> Result<Box<dyn DisplayLease>, PlatformError>;
     fn start_video(
         &self,
         display: &DisplayInfo,
@@ -121,6 +144,11 @@ pub trait HostPlatform: Send + Sync + 'static {
     ) -> Result<Box<dyn VideoPipeline>, PlatformError>;
     /// Injects authenticated input targeting `display`.
     fn inject_input(&self, display: &DisplayInfo, event: &InputEvent) -> Result<(), PlatformError>;
+    /// Called on the input thread when no input arrived for a short while
+    /// (~40 ms), so touch contacts that are held still can be refreshed.
+    fn input_idle(&self, _display: &DisplayInfo) {}
+    /// The session ended: release anything still pressed.
+    fn input_ended(&self) {}
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]

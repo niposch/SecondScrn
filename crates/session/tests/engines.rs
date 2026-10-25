@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use secondscrn_protocol::{DisplayRequest, Orientation, PointerAction, PointerButton};
+use secondscrn_protocol::{
+    DisplayRequest, InputEvent, Orientation, PenAction, PointerAction, PointerButton, TouchContact,
+};
 use secondscrn_security::UnprotectedForTests;
 use secondscrn_session::settings::HostSettings;
 use secondscrn_session::snapshot::{ClientPhase, ClientSnapshot, HostSnapshot, SessionPhase};
@@ -162,6 +164,104 @@ async fn pair_stream_input_and_reconnect() {
     }
     assert!(!saw_pairing);
     assert_eq!(r.host_platform.state.displays_acquired.load(Ordering::SeqCst), 2);
+}
+
+async fn streaming(r: &Rig) {
+    let mut cs = r.client.subscribe();
+    let mut hs = r.host.subscribe();
+    pair(r).await;
+    wait(&mut cs, 15, "client streaming", |s: &ClientSnapshot| s.phase == ClientPhase::Streaming).await;
+    wait(&mut hs, 10, "host streaming", |s: &HostSnapshot| {
+        s.session.as_ref().is_some_and(|x| x.phase == SessionPhase::Streaming)
+    })
+    .await;
+}
+
+fn stream_size(s: &ClientSnapshot) -> Option<(u32, u32, u32)> {
+    s.stream.as_ref().map(|c| (c.width, c.height, c.scale_percent))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resolution_follows_tablet_pc_and_windows_settings() {
+    let r = rig().await;
+    streaming(&r).await;
+    let mut cs = r.client.subscribe();
+    let mut hs = r.host.subscribe();
+    assert_eq!(stream_size(&cs.borrow()), Some((1280, 800, 100)));
+    // Rotating needs no new mode later: the rotated size is offered up front.
+    let first = r.host_platform.state.plans.lock().unwrap()[0].clone();
+    assert_eq!(first.alternatives, vec![(800, 1280)]);
+    let opts = wait(&mut hs, 5, "options", |s: &HostSnapshot| {
+        s.session.as_ref().is_some_and(|x| x.resolutions.len() == secondscrn_protocol::RESOLUTION_SCALES.len())
+    })
+    .await;
+    assert_eq!(opts.session.unwrap().resolutions[0].width, 1280);
+    assert_eq!(cs.borrow().resolutions.len(), secondscrn_protocol::RESOLUTION_SCALES.len());
+
+    // The tablet asks for half resolution; the PC remembers it.
+    r.client.set_resolution(50);
+    wait(&mut cs, 10, "half resolution", |s: &ClientSnapshot| stream_size(s) == Some((640, 400, 50))).await;
+    let h = wait(&mut hs, 5, "remembered", |s: &HostSnapshot| {
+        s.paired_devices.first().is_some_and(|d| d.preferences.resolution_scale == Some(50))
+            && s.session.as_ref().and_then(|x| x.display.as_ref()).is_some_and(|d| d.width == 640)
+    })
+    .await;
+    assert_eq!(h.session.unwrap().stream.unwrap().scale_percent, 50);
+
+    // Rotation keeps the chosen scale.
+    r.client.set_display(DisplayRequest {
+        width: 800,
+        height: 1280,
+        refresh_hz: 60,
+        dpi: 200,
+        orientation: Orientation::Portrait,
+    });
+    wait(&mut cs, 10, "rotated", |s: &ClientSnapshot| stream_size(s) == Some((400, 640, 50))).await;
+
+    // The PC app picks 75 % (snapped from 74).
+    r.host.set_resolution(74).unwrap();
+    wait(&mut cs, 10, "75 %", |s: &ClientSnapshot| stream_size(s) == Some((600, 960, 75))).await;
+
+    // Frame rate: the PC's global default (60) is overridden per tablet; the
+    // monitor keeps its mode.
+    assert_eq!(cs.borrow().frame_rates, vec![30, 60]);
+    r.client.set_frame_rate(30);
+    wait(&mut cs, 10, "30 fps", |s: &ClientSnapshot| s.stream.as_ref().is_some_and(|c| c.max_fps == 30)).await;
+    assert_eq!(stream_size(&cs.borrow()), Some((600, 960, 75)));
+    wait(&mut hs, 5, "fps remembered", |s: &HostSnapshot| {
+        s.paired_devices.first().is_some_and(|d| d.preferences.max_fps == Some(30))
+    })
+    .await;
+
+    // The user changes the mode in the Windows display settings: the stream
+    // follows it instead of failing.
+    *r.host_platform.state.external_mode.lock().unwrap() = Some((768, 1024));
+    wait(&mut cs, 10, "external mode", |s: &ClientSnapshot| stream_size(s) == Some((768, 1024, 0))).await;
+    assert_eq!(r.client.snapshot().phase, ClientPhase::Streaming);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn touch_and_pen_reach_the_host() {
+    let r = rig().await;
+    streaming(&r).await;
+    let c = |id, action, x| TouchContact { id, action, x, y: 0.5 };
+    r.client.send_touch(vec![c(0, PointerAction::Down, 0.2)]);
+    r.client.send_touch(vec![c(0, PointerAction::Move, 0.3), c(1, PointerAction::Down, 1.7)]);
+    r.client.send_touch(vec![c(0, PointerAction::Up, 0.3), c(1, PointerAction::Up, 0.8)]);
+    r.client.send_pen(PenAction::Hover, 0.4, 0.4, 0.0, 0.0, 0.0, false, false);
+    r.client.send_pen(PenAction::Down, 0.4, 0.4, 0.7, 10.0, -5.0, false, false);
+    r.client.send_pen(PenAction::Up, 0.4, 0.4, 0.0, 10.0, -5.0, false, false);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let inputs = r.host_platform.state.inputs.lock().unwrap().clone();
+    assert_eq!(inputs.len(), 6);
+    match &inputs[1] {
+        InputEvent::Touch { contacts, .. } => {
+            assert_eq!(contacts.len(), 2);
+            assert_eq!(contacts[1].x, 1.0, "coordinates are clamped");
+        }
+        other => panic!("expected touch, got {other:?}"),
+    }
+    assert!(matches!(inputs[4], InputEvent::Pen { action: PenAction::Down, pressure, .. } if pressure == 0.7));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

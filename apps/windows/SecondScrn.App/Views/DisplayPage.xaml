@@ -20,8 +20,15 @@
             <Border Style="{StaticResource Card}">
                 <StackPanel Spacing="8">
                     <TextBlock Text="Tablet display" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <TextBlock TextWrapping="Wrap" Text="When a tablet connects, a monitor with the tablet's native resolution and refresh rate is added to Windows, next to your other displays. Rotating the tablet switches the monitor between landscape and portrait." />
+                    <TextBlock TextWrapping="Wrap" Text="When a tablet connects, a monitor with the tablet's resolution and refresh rate is added to Windows, next to your other displays. Rotating the tablet switches the monitor between landscape and portrait. Changing the resolution here, on the tablet or in the Windows display settings takes effect immediately." />
                     <TextBlock Text="{x:Bind ViewModel.ConnectionDetail, Mode=OneWay}" Style="{StaticResource Caption}" />
+                    <ComboBox Header="Resolution" MinWidth="280" ItemsSource="{x:Bind ViewModel.ResolutionLabels, Mode=OneWay}"
+                              SelectedIndex="{x:Bind ViewModel.ResolutionIndex, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.CanChangeResolution, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind ViewModel.ResolutionHint, Mode=OneWay}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                    <ComboBox Header="Frame rate" MinWidth="280" ItemsSource="{x:Bind ViewModel.FrameRateLabels, Mode=OneWay}"
+                              SelectedIndex="{x:Bind ViewModel.FrameRateIndex, Mode=TwoWay}"
+                              IsEnabled="{x:Bind ViewModel.CanChangeResolution, Mode=OneWay}" />
                     <Button Content="Arrange displays and set scaling in Windows…" Click="OnDisplaySettings" />
                 </StackPanel>
             </Border>

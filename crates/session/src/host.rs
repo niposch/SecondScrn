@@ -28,7 +28,7 @@ use crate::adapt::{BitrateController, BitratePolicy};
 use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STEP_TIMEOUT};
 use crate::negotiate::{NegotiationError, NegotiationInput, negotiate};
 use crate::platform::{
-    DisplayInfo, DisplayLease, DriverStatus, HostPlatform, PipelineSink, PlatformError, VideoPipeline,
+    DisplayInfo, DisplayLease, DisplayPlan, DriverStatus, HostPlatform, PipelineSink, PlatformError, VideoPipeline,
 };
 use crate::settings::{self, DevicePreferences, HostSettings};
 use crate::snapshot::{HostMetrics, HostSnapshot, LinkHealth, PairedDevice, PairingPrompt, SessionInfo, SessionPhase};
@@ -62,6 +62,19 @@ enum PairDecision {
 enum SessionCommand {
     Disconnect { reconnect: bool },
     SetPreset(QualityPreset),
+    SetResolution(u32),
+    SetFrameRate(u32),
+}
+
+/// Why the stream is about to change.
+enum DisplayChange {
+    /// Another frame rate: only the encoder restarts.
+    FrameRate,
+    /// The tablet rotated or the user picked another resolution: apply a new plan.
+    Plan,
+    /// The mode was changed outside SecondScrn (Windows display settings):
+    /// follow it.
+    External,
 }
 
 struct ActiveSession {
@@ -233,18 +246,48 @@ impl HostEngine {
         if !lock(&self.inner.trust).is_trusted(&fp) {
             return Err(SessionError::NotFound("paired device"));
         }
-        let effective = {
+        let (effective, scale_changed) = {
             let mut s = lock(&self.inner.settings);
+            let old = s.device(fingerprint_hex).scale_percent();
             s.devices.insert(fingerprint_hex.to_string(), prefs.clone());
-            prefs.preset.unwrap_or(s.preset)
+            (prefs.preset.unwrap_or(s.preset), old != prefs.scale_percent())
         };
         self.inner.save_settings();
         let st = lock(&self.inner.state);
         if let Some(s) = st.session.as_ref().filter(|s| s.fingerprint == fp) {
             let _ = s.commands.send(SessionCommand::SetPreset(effective));
+            if scale_changed {
+                let _ = s.commands.send(SessionCommand::SetResolution(prefs.scale_percent()));
+            }
         }
         drop(st);
         self.inner.publish();
+        Ok(())
+    }
+
+    /// Streams the connected tablet at `scale_percent` of its panel resolution
+    /// (snapped to an offered scale) and remembers the choice for that tablet.
+    pub fn set_resolution(&self, scale_percent: u32) -> Result<(), SessionError> {
+        let scale = settings::snap_scale(scale_percent);
+        let st = lock(&self.inner.state);
+        let s = st.session.as_ref().ok_or(SessionError::NotFound("connected tablet"))?;
+        let _ = s.commands.send(SessionCommand::SetResolution(scale));
+        let fp = s.fingerprint;
+        drop(st);
+        self.inner.remember_scale(&fp, scale);
+        Ok(())
+    }
+
+    /// Streams the connected tablet at up to `fps` frames per second and
+    /// remembers the choice for that tablet.
+    pub fn set_frame_rate(&self, fps: u32) -> Result<(), SessionError> {
+        let fps = fps.clamp(10, 240);
+        let st = lock(&self.inner.state);
+        let s = st.session.as_ref().ok_or(SessionError::NotFound("connected tablet"))?;
+        let _ = s.commands.send(SessionCommand::SetFrameRate(fps));
+        let fp = s.fingerprint;
+        drop(st);
+        self.inner.remember_fps(&fp, fps);
         Ok(())
     }
 
@@ -380,6 +423,28 @@ impl HostInner {
         if let Err(e) = settings::save(&self.data_dir.join("settings.json"), &s) {
             tracing::error!(error = %e, "failed to save settings");
         }
+    }
+
+    fn remember_scale(&self, fp: &Fingerprint, scale: u32) {
+        {
+            let mut s = lock(&self.settings);
+            let mut prefs = s.device(&fp.to_hex());
+            prefs.resolution_scale = Some(scale);
+            s.devices.insert(fp.to_hex(), prefs);
+        }
+        self.save_settings();
+        self.publish();
+    }
+
+    fn remember_fps(&self, fp: &Fingerprint, fps: u32) {
+        {
+            let mut s = lock(&self.settings);
+            let mut prefs = s.device(&fp.to_hex());
+            prefs.max_fps = Some(fps);
+            s.devices.insert(fp.to_hex(), prefs);
+        }
+        self.save_settings();
+        self.publish();
     }
 
     fn set_error(&self, msg: Option<String>) {
@@ -741,7 +806,18 @@ fn spawn_input_thread(
         .name("secondscrn-input".into())
         .spawn(move || {
             let mut last_seq = 0u64;
-            while let Ok(ev) = rx.recv() {
+            loop {
+                let ev = match rx.recv_timeout(Duration::from_millis(40)) {
+                    Ok(ev) => ev,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        platform.input_idle(&lock(&display).clone());
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        platform.input_ended();
+                        return;
+                    }
+                };
                 if ev.seq() <= last_seq && last_seq != 0 {
                     continue; // stale or replayed
                 }
@@ -814,6 +890,8 @@ async fn run_session(
                     phase: SessionPhase::Negotiating,
                     stream: None,
                     display: None,
+                    resolutions: Vec::new(),
+                    frame_rates: Vec::new(),
                     metrics: HostMetrics::default(),
                     connected_since: now_unix(),
                 },
@@ -860,13 +938,17 @@ async fn stream(
     client_preferred: Option<secondscrn_protocol::Codec>,
     commands: &mut mpsc::UnboundedReceiver<SessionCommand>,
 ) -> Result<(), SessionError> {
-    let (settings, preset) = {
+    let (settings, mut preset, mut scale, mut fps_cap) = {
         let s = lock(&inner.settings).clone();
-        let preset = s.device(&fp.to_hex()).preset.unwrap_or(s.preset);
-        (s, preset)
+        let prefs = s.device(&fp.to_hex());
+        let preset = prefs.preset.unwrap_or(s.preset);
+        // A per-tablet frame rate overrides the global limit.
+        (s.clone(), preset, prefs.scale_percent(), prefs.max_fps.unwrap_or(s.max_fps))
     };
+    // The tablet reports its panel; the monitor is that panel at `scale`.
+    let mut native = display_req;
     let encoders = lock(&inner.encoders).clone();
-    let negotiate_for = |req: DisplayRequest, preset: QualityPreset| {
+    let negotiate_for = |req: DisplayRequest, preset: QualityPreset, fps_cap: u32| {
         negotiate(&NegotiationInput {
             encoders: &encoders,
             decoders: &decoders,
@@ -874,10 +956,10 @@ async fn stream(
             preset,
             forced_codec: settings.preferred_codec,
             client_preferred,
-            host_max_fps: settings.max_fps,
+            host_max_fps: fps_cap,
         })
     };
-    let mut config = match negotiate_for(display_req, preset) {
+    let mut config = match negotiate_for(native.scaled(scale), preset, fps_cap) {
         Ok(c) => c,
         Err(e) => {
             let reason = match e {
@@ -893,7 +975,8 @@ async fn stream(
     // --- Display
     let linger = Duration::from_secs(settings.display_linger_secs as u64);
     let platform = inner.platform.clone();
-    let lease = tokio::task::spawn_blocking(move || platform.acquire_display(&display_req, linger))
+    let plan = DisplayPlan::new(&native, scale);
+    let lease = tokio::task::spawn_blocking(move || platform.acquire_display(&plan, linger))
         .await
         .map_err(|_| SessionError::Protocol("display task panicked"))?;
     let mut lease: Box<dyn DisplayLease> = match lease {
@@ -908,9 +991,12 @@ async fn stream(
     // Stream what the display actually is (the driver may round the mode).
     config.width = display.width;
     config.height = display.height;
+    config.scale_percent = native.scale_of(display.width, display.height);
     inner.update_session(id, |s| {
         s.stream = Some(config.clone());
         s.display = Some(display.clone());
+        s.resolutions = native.resolution_options();
+        s.frame_rates = native.frame_rate_options();
     });
 
     // --- WebRTC
@@ -965,6 +1051,7 @@ async fn stream(
 
     // Ok(reconnect) = orderly end.
     let outcome: Result<bool, SessionError> = loop {
+        let mut change: Option<DisplayChange> = None;
         tokio::select! {
             msg = ch.rx.recv() => {
                 let msg = match msg {
@@ -979,40 +1066,25 @@ async fn stream(
                     ClientMessage::Stats { stats } => metrics.client = Some(stats),
                     ClientMessage::Ping { nonce } => ch.send(&HostMessage::Pong { nonce }).await?,
                     ClientMessage::Pong { .. } => {}
-                    ClientMessage::SetPreset { preset } => {
+                    ClientMessage::SetPreset { preset: p } => {
+                        preset = p;
                         if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
                             pipeline.set_target(t.bitrate_bps, t.fps);
                         }
                     }
                     ClientMessage::DisplayChanged { display: req } => {
-                        // Rotation/resize: reconfigure the monitor, restart the
-                        // encoder at the new size, keep the WebRTC session.
-                        drop(pipeline);
-                        let lease_result = {
-                            let mut l = lease;
-                            let r = tokio::task::spawn_blocking(move || { let r = l.reconfigure(&req); (l, r) }).await
-                                .map_err(|_| SessionError::Protocol("display task panicked"))?;
-                            lease = r.0;
-                            r.1
-                        };
-                        match lease_result {
-                            Ok(d) => display = d,
-                            Err(e) => tracing::warn!(error = %e, "display reconfiguration failed; keeping previous mode"),
-                        }
-                        *lock(&shared_display) = display.clone();
-                        if let Ok(c) = negotiate_for(req, preset) && c.codec == config.codec {
-                            config.max_fps = c.max_fps;
-                        }
-                        config.width = display.width;
-                        config.height = display.height;
-                        if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
-                            tracing::debug!(?t, "target after display change");
-                        }
-                        ch.send(&HostMessage::StreamChanged { stream: config.clone() }).await?;
-                        pipeline = start_pipeline(display.clone(), config.clone(), controller.current(), media.frame_sender(), err_tx.clone())
-                            .await
-                            .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
-                        inner.update_session(id, |s| { s.stream = Some(config.clone()); s.display = Some(display.clone()); });
+                        native = req;
+                        change = Some(DisplayChange::Plan);
+                    }
+                    ClientMessage::SetResolution { scale_percent } => {
+                        scale = settings::snap_scale(scale_percent);
+                        inner.remember_scale(&fp, scale);
+                        change = Some(DisplayChange::Plan);
+                    }
+                    ClientMessage::SetFrameRate { fps } => {
+                        fps_cap = fps.clamp(10, 240);
+                        inner.remember_fps(&fp, fps_cap);
+                        change = Some(DisplayChange::FrameRate);
                     }
                     ClientMessage::Goodbye => break Ok(false),
                     ClientMessage::SessionRequest { .. } | ClientMessage::SdpAnswer { .. } | ClientMessage::Hello { .. }
@@ -1061,27 +1133,41 @@ async fn stream(
                 }
             }
             Some(err) = pipeline_errors.recv() => {
-                restarts += 1;
-                tracing::warn!(error = %err, restarts, "video pipeline failed");
-                if restarts > MAX_PIPELINE_RESTARTS {
-                    inner.set_error(Some(format!("Streaming stopped: {err}")));
-                    break Err(err.into());
+                if mode_changed(lease.as_ref(), &config) {
+                    // Expected: capture stops when the monitor changes size.
+                    change = Some(DisplayChange::External);
+                } else {
+                    restarts += 1;
+                    tracing::warn!(error = %err, restarts, "video pipeline failed");
+                    if restarts > MAX_PIPELINE_RESTARTS {
+                        inner.set_error(Some(format!("Streaming stopped: {err}")));
+                        break Err(err.into());
+                    }
+                    drop(pipeline);
+                    tokio::time::sleep(Duration::from_millis(250 * restarts as u64)).await;
+                    display = lease.info();
+                    *lock(&shared_display) = display.clone();
+                    pipeline = start_pipeline(display.clone(), config.clone(), controller.current(), media.frame_sender(), err_tx.clone())
+                        .await
+                        .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
                 }
-                drop(pipeline);
-                tokio::time::sleep(Duration::from_millis(250 * restarts as u64)).await;
-                display = lease.info();
-                *lock(&shared_display) = display.clone();
-                pipeline = start_pipeline(display.clone(), config.clone(), controller.current(), media.frame_sender(), err_tx.clone())
-                    .await
-                    .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
             }
             cmd = commands.recv() => match cmd {
                 None => break Ok(false),
                 Some(SessionCommand::Disconnect { reconnect }) => break Ok(reconnect),
                 Some(SessionCommand::SetPreset(p)) => {
-                    if let Some(t) = controller.set_policy(policy_for(&config, p)) {
+                    preset = p;
+                    if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
                         pipeline.set_target(t.bitrate_bps, t.fps);
                     }
+                }
+                Some(SessionCommand::SetResolution(p)) => {
+                    scale = p;
+                    change = Some(DisplayChange::Plan);
+                }
+                Some(SessionCommand::SetFrameRate(f)) => {
+                    fps_cap = f;
+                    change = Some(DisplayChange::FrameRate);
                 }
             },
             _ = ping.tick() => {
@@ -1096,7 +1182,70 @@ async fn stream(
                 metrics.health = LinkHealth::assess(metrics.rtt_ms, metrics.loss, metrics.pipeline.encode_fps, target_fps);
                 let m = metrics.clone();
                 inner.update_session(id, |s| s.metrics = m);
+                if mode_changed(lease.as_ref(), &config) {
+                    change = Some(DisplayChange::External);
+                }
             }
+        }
+
+        // Reconfigure the monitor and restart the encoder at the new size;
+        // the WebRTC session and the tablet's decoder surface are kept.
+        if let Some(change) = change {
+            drop(pipeline);
+            match change {
+                DisplayChange::FrameRate => {}
+                DisplayChange::Plan => {
+                    let plan = DisplayPlan::new(&native, scale);
+                    let mut l = lease;
+                    let (l, r) = tokio::task::spawn_blocking(move || {
+                        let r = l.reconfigure(&plan);
+                        (l, r)
+                    })
+                    .await
+                    .map_err(|_| SessionError::Protocol("display task panicked"))?;
+                    lease = l;
+                    match r {
+                        Ok(d) => display = d,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "display reconfiguration failed; keeping the current mode");
+                            display = lease.info();
+                        }
+                    }
+                }
+                DisplayChange::External => {
+                    display = lease.info();
+                    let (w, h) = (display.width, display.height);
+                    tracing::info!(width = w, height = h, "display mode changed on the PC; following it");
+                }
+            }
+            *lock(&shared_display) = display.clone();
+            if let Ok(c) = negotiate_for(native.scaled(scale), preset, fps_cap)
+                && c.codec == config.codec
+            {
+                config.max_fps = c.max_fps;
+            }
+            config.width = display.width;
+            config.height = display.height;
+            config.scale_percent = native.scale_of(display.width, display.height);
+            if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
+                tracing::debug!(?t, "target after display change");
+            }
+            ch.send(&HostMessage::StreamChanged { stream: config.clone() }).await?;
+            pipeline = start_pipeline(
+                display.clone(),
+                config.clone(),
+                controller.current(),
+                media.frame_sender(),
+                err_tx.clone(),
+            )
+            .await
+            .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
+            inner.update_session(id, |s| {
+                s.stream = Some(config.clone());
+                s.display = Some(display.clone());
+                s.resolutions = native.resolution_options();
+                s.frame_rates = native.frame_rate_options();
+            });
         }
     };
 
@@ -1110,4 +1259,11 @@ async fn stream(
     // display driver.
     let _ = tokio::task::spawn_blocking(move || drop(lease)).await;
     outcome.map(|_| ())
+}
+
+/// True when the leased monitor no longer has the size being streamed (the
+/// user changed it in the Windows display settings).
+fn mode_changed(lease: &dyn DisplayLease, config: &StreamConfig) -> bool {
+    let d = lease.info();
+    (d.width, d.height) != (config.width, config.height)
 }

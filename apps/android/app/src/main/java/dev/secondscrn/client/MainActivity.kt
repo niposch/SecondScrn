@@ -1,5 +1,6 @@
 package dev.secondscrn.client
 
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
@@ -8,6 +9,10 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -22,6 +27,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         reportDisplay()
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                repo.state.collect { s -> if (s != null) applyRotationLock(s.rotationLocked) }
+            }
+        }
         setContent {
             SecondScrnTheme {
                 SecondScrnRoot(repo = repo, onStreamingChanged = ::setStreamingMode)
@@ -43,6 +53,12 @@ class MainActivity : ComponentActivity() {
         super.onConfigurationChanged(newConfig)
         // Rotation or window resize: the PC re-configures the virtual monitor.
         reportDisplay()
+    }
+
+    /** Locks the screen in its current orientation, or follows the sensor again. */
+    private fun applyRotationLock(locked: Boolean) {
+        val wanted = if (locked) ActivityInfo.SCREEN_ORIENTATION_LOCKED else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        if (requestedOrientation != wanted) requestedOrientation = wanted
     }
 
     /** Tells the PC how large this screen is, in physical pixels. */

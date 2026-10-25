@@ -7,15 +7,20 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -41,8 +46,10 @@ import dev.secondscrn.client.ClientRepository
 import dev.secondscrn.client.NativeSurface
 import kotlinx.coroutines.delay
 import uniffi.secondscrn_client.ClientState
+import uniffi.secondscrn_client.PenKind
 import uniffi.secondscrn_client.Phase
 import uniffi.secondscrn_client.PointerKind
+import uniffi.secondscrn_client.TouchPoint
 
 @Composable
 fun StreamScreen(state: ClientState, repo: ClientRepository) {
@@ -50,6 +57,7 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
     var overlay by rememberSaveable { mutableStateOf(false) }
     var hint by rememberSaveable { mutableStateOf(true) }
     val touchEnabled by rememberUpdatedState(state.touchInput)
+    val asMouse by rememberUpdatedState(state.touchAsMouse)
     BackHandler { overlay = !overlay }
     LaunchedEffect(Unit) {
         delay(4000)
@@ -77,6 +85,16 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
                         override fun scroll(x: Float, y: Float, dx: Float, dy: Float) {
                             if (touchEnabled) repo.scroll(x, y, dx, dy)
                         }
+                        override fun touch(points: List<TouchPoint>) {
+                            if (touchEnabled) repo.touch(points)
+                        }
+                        override fun pen(
+                            kind: PenKind, x: Float, y: Float, pressure: Float,
+                            tiltX: Float, tiltY: Float, barrel: Boolean, eraser: Boolean,
+                        ) {
+                            if (touchEnabled) repo.pen(kind, x, y, pressure, tiltX, tiltY, barrel, eraser)
+                        }
+                        override val touchAsMouse get() = asMouse
                         override fun toggleOverlay() {
                             overlay = !overlay
                         }
@@ -93,10 +111,26 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
 
         StatusBadge(state)
 
+        // Opens the options without taking a gesture away from the PC.
+        if (!overlay) {
+            Box(
+                Modifier.align(Alignment.TopCenter)
+                    .size(width = 72.dp, height = 28.dp)
+                    .clickable(onClickLabel = "Show session options") { overlay = true },
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                Box(
+                    Modifier.padding(top = 6.dp).size(width = 48.dp, height = 5.dp)
+                        .background(Color(0x99FFFFFF), RoundedCornerShape(3.dp))
+                        .border(0.5.dp, Color(0x66000000), RoundedCornerShape(3.dp)),
+                )
+            }
+        }
+
         AnimatedVisibility(hint && !overlay, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
             Surface(shape = RoundedCornerShape(20.dp), color = Color(0xCC000000), modifier = Modifier.padding(24.dp)) {
                 Text(
-                    "Three-finger tap or Back for options",
+                    if (state.touchAsMouse) "Three-finger tap, Back or the handle at the top for options" else "Back or the handle at the top for options",
                     color = Color.White,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
@@ -126,6 +160,7 @@ private fun StatusBadge(state: ClientState) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: () -> Unit) {
     Surface(
@@ -144,13 +179,64 @@ private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: 
             }
             Text("Quality", style = MaterialTheme.typography.labelLarge)
             PresetSelector(state.preset, repo::setPreset)
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Resolution", style = MaterialTheme.typography.labelLarge)
+            ResolutionSelector(state, repo)
+            Text("Frame rate", style = MaterialTheme.typography.labelLarge)
+            FrameRateSelector(state, repo)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = state.touchInput,
                     onClick = { repo.setTouchInput(!state.touchInput) },
                     label = { Text(if (state.touchInput) "Touch controls the PC" else "Touch input off (view only)") },
                 )
+                FilterChip(
+                    selected = state.touchAsMouse,
+                    enabled = state.touchInput,
+                    onClick = { repo.setTouchAsMouse(!state.touchAsMouse) },
+                    label = { Text("Touch as mouse") },
+                )
+                FilterChip(
+                    selected = state.rotationLocked,
+                    onClick = { repo.setRotationLocked(!state.rotationLocked) },
+                    label = { Text(if (state.rotationLocked) "Rotation locked" else "Lock rotation") },
+                )
             }
+        }
+    }
+}
+
+/** Stream sizes for this screen; lower ones save bandwidth on weak Wi-Fi. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ResolutionSelector(state: ClientState, repo: ClientRepository) {
+    val current = state.stream?.scalePercent?.toInt()
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        state.resolutions.forEach { r ->
+            val pct = r.scalePercent.toInt()
+            FilterChip(
+                selected = current == pct,
+                onClick = { repo.setResolution(pct) },
+                label = { Text("${r.width}×${r.height}" + if (pct == 100) " (native)" else " ($pct %)") },
+            )
+        }
+        if (current == 0) {
+            val s = state.stream
+            FilterChip(selected = true, onClick = {}, label = { Text("${s?.width}×${s?.height} (set on PC)") })
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun FrameRateSelector(state: ClientState, repo: ClientRepository) {
+    val current = state.stream?.maxFps?.toInt()
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        state.frameRates.forEach { r ->
+            FilterChip(
+                selected = current == r.toInt(),
+                onClick = { repo.setFrameRate(r.toInt()) },
+                label = { Text("$r fps") },
+            )
         }
     }
 }

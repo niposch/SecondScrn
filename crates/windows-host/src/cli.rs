@@ -83,6 +83,7 @@ pub fn main() -> Result<()> {
                 color: ColorInfo::SDR_BT709_LIMITED,
                 initial_bitrate_bps: 20_000_000,
                 encoder: desc.name.clone(),
+                scale_percent: 100,
             };
             let mut f = std::io::BufWriter::new(std::fs::File::create(file)?);
             let n = pipeline::record(monitor, config, desc, secs.parse()?, &mut f)?;
@@ -110,12 +111,23 @@ pub fn main() -> Result<()> {
                     orientation: secondscrn_protocol::Orientation::Landscape,
                 };
                 let mgr = crate::virtual_display::VirtualDisplayManager::default();
-                let lease = mgr.acquire(&req, std::time::Duration::ZERO).map_err(|e| anyhow::anyhow!(e))?;
+                let plan = secondscrn_session::platform::DisplayPlan { request: req, alternatives: Vec::new() };
+                let lease = mgr.acquire(&plan, std::time::Duration::ZERO).map_err(|e| anyhow::anyhow!(e))?;
                 use secondscrn_session::platform::DisplayLease;
                 println!("attached: {:?}", lease.info());
                 std::mem::forget(lease); // keep attached after exit
             }
             Some("detach") => crate::display::detach_vdd()?,
+            // Changes the mode like the Windows display settings would.
+            Some("set-mode") => {
+                let spec = args.get(2).context("usage: vdd set-mode WIDTHxHEIGHT@HZ")?;
+                let (wh, hz) = spec.split_once('@').unwrap_or((spec, "60"));
+                let (w, h) = wh.split_once('x').context("WIDTHxHEIGHT")?;
+                let gdi = crate::display::active_vdd()?.context("the virtual monitor is not active")?;
+                let mode = crate::display::Mode { width: w.parse()?, height: h.parse()?, refresh_hz: hz.parse()? };
+                crate::display::set_mode(&gdi, mode)?;
+                println!("{gdi}: {:?}", crate::display::current_mode(&gdi));
+            }
             Some("attach-record") => {
                 let delay: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(0);
                 let req = secondscrn_protocol::DisplayRequest {
@@ -126,7 +138,8 @@ pub fn main() -> Result<()> {
                     orientation: secondscrn_protocol::Orientation::Landscape,
                 };
                 let mgr = crate::virtual_display::VirtualDisplayManager::default();
-                let lease = mgr.acquire(&req, std::time::Duration::ZERO).map_err(|e| anyhow::anyhow!(e))?;
+                let plan = secondscrn_session::platform::DisplayPlan { request: req, alternatives: Vec::new() };
+                let lease = mgr.acquire(&plan, std::time::Duration::ZERO).map_err(|e| anyhow::anyhow!(e))?;
                 use secondscrn_session::platform::DisplayLease;
                 let info = lease.info();
                 std::thread::sleep(std::time::Duration::from_millis(delay));

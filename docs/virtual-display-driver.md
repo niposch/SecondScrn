@@ -28,10 +28,14 @@ writable by your user.
 
 * **Control:** the driver's local pipe `\\.\pipe\MTTVirtualDisplayPipe`
   (`SETDISPLAYCOUNT`, `RELOAD_DRIVER`) and `vdd_settings.xml`.
-* **Resolutions:** when a tablet connects, its native resolution and refresh
-  rate are added to the settings file if missing, and the driver is reloaded —
-  with the virtual monitor detached first, so Windows doesn't re-apply the
-  topology mid-change.
+* **Resolutions:** the size being streamed, its rotated counterpart and the
+  tablet's native size are added to the settings file if missing (marked
+  `<!-- added by SecondScrn -->`), and the driver is reloaded — with the
+  virtual monitor detached first, so Windows doesn't re-apply the topology
+  mid-change. At most four such entries exist at a time; entries SecondScrn
+  added earlier are removed when something new is added. Entries you added
+  yourself are never touched. The cap matters: every entry is multiplied by
+  every `<g_refresh_rate>`, and VDD 2.35 crashed with ~20 entries × 6 rates.
 * **Attach/detach:** the VDD target is activated/deactivated with
   `SetDisplayConfig`. Only the VDD path is changed; every other active display
   is snapshotted beforehand, configurations missing one are never applied, and
@@ -64,4 +68,5 @@ To remove it, run elevated:
 | "not installed" | Device Manager → Display adapters → *Virtual Display Driver* present? |
 | "not running" | device disabled or failed; re-enable it or reinstall |
 | Monitor appears but stays at another resolution | `secondscrn-host-cli vdd status` lists offered modes; the settings file must be writable |
+| Device Manager shows code 43, Event Viewer "WUDFUnhandledException … mttvdd.dll" | the driver crashed (e.g. too many resolutions in `vdd_settings.xml`); remove extra entries, then disable and re-enable *Virtual Display Driver* in Device Manager |
 | A physical monitor turned off during testing | `secondscrn-host-cli targets`, then `secondscrn-host-cli activate <id>` |

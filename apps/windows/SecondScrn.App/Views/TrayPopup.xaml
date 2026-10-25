@@ -11,6 +11,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
         <StackPanel Orientation="Horizontal" Spacing="10">
             <Image Source="ms-appx:///Assets/SecondScrn.png" Width="20" Height="20" />
@@ -41,7 +42,19 @@
                    Visibility="{x:Bind ViewModel.IdleVisibility, Mode=OneWay}" Style="{StaticResource Caption}" />
         <ComboBox Grid.Row="3" Header="Quality" ItemsSource="{x:Bind ViewModel.Presets}"
                   SelectedIndex="{x:Bind ViewModel.PresetIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" />
-        <Grid Grid.Row="4" ColumnSpacing="8">
+        <Grid Grid.Row="4" ColumnSpacing="8" Visibility="{x:Bind ViewModel.ConnectedVisibility, Mode=OneWay}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <ComboBox Header="Resolution" ItemsSource="{x:Bind ViewModel.ResolutionLabels, Mode=OneWay}"
+                      SelectedIndex="{x:Bind ViewModel.ResolutionIndex, Mode=TwoWay}" HorizontalAlignment="Stretch"
+                      IsEnabled="{x:Bind ViewModel.CanChangeResolution, Mode=OneWay}" />
+            <ComboBox Grid.Column="1" Header="Frame rate" ItemsSource="{x:Bind ViewModel.FrameRateLabels, Mode=OneWay}"
+                      SelectedIndex="{x:Bind ViewModel.FrameRateIndex, Mode=TwoWay}" HorizontalAlignment="Stretch"
+                      IsEnabled="{x:Bind ViewModel.CanChangeResolution, Mode=OneWay}" />
+        </Grid>
+        <Grid Grid.Row="5" ColumnSpacing="8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="*" />

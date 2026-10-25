@@ -129,6 +129,29 @@ pub struct SessionView {
     pub virtual_display: bool,
     pub connected_since: u64,
     pub metrics: MetricsView,
+    /// Current size as a percentage of the tablet panel; 0 = a mode chosen
+    /// in the Windows display settings.
+    pub scale_percent: u32,
+    pub resolutions: Vec<ResolutionView>,
+    /// Frame rates offered for this tablet; `max_fps` is the current one.
+    pub frame_rates: Vec<u32>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ResolutionView {
+    pub scale_percent: u32,
+    pub width: u32,
+    pub height: u32,
+    /// e.g. "2400 × 1602 (75 %)".
+    pub label: String,
+}
+
+pub fn resolution_label(o: &secondscrn_protocol::ResolutionOption) -> String {
+    if o.scale_percent == 100 {
+        format!("{} × {} (native)", o.width, o.height)
+    } else {
+        format!("{} × {} ({} %)", o.width, o.height, o.scale_percent)
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -151,6 +174,8 @@ pub struct DeviceView {
     pub preset: Option<Preset>,
     pub auto_reconnect: bool,
     pub connected: bool,
+    /// Remembered resolution, percent of the panel.
+    pub resolution_scale: u32,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -301,6 +326,18 @@ pub fn to_view(s: &HostSnapshot, data_dir: &str) -> HostState {
             display_id: display.map(|d| d.id.clone()).unwrap_or_default(),
             virtual_display: display.is_some_and(|d| d.is_virtual),
             connected_since: x.connected_since,
+            scale_percent: stream.map(|c| c.scale_percent).unwrap_or(100),
+            resolutions: x
+                .resolutions
+                .iter()
+                .map(|o| ResolutionView {
+                    scale_percent: o.scale_percent,
+                    width: o.width,
+                    height: o.height,
+                    label: resolution_label(o),
+                })
+                .collect(),
+            frame_rates: x.frame_rates.clone(),
             metrics: MetricsView {
                 capture_fps: m.pipeline.capture_fps,
                 encode_fps: m.pipeline.encode_fps,
@@ -351,6 +388,7 @@ pub fn to_view(s: &HostSnapshot, data_dir: &str) -> HostState {
                 preset: d.preferences.preset.map(preset_from),
                 auto_reconnect: d.preferences.allow_auto_reconnect,
                 connected: connected_fp.as_deref() == Some(d.fingerprint.as_str()),
+                resolution_scale: d.preferences.scale_percent(),
             })
             .collect(),
         driver: match &s.driver {
@@ -487,12 +525,25 @@ impl SecondScrnHost {
         preset: Option<Preset>,
         auto_reconnect: bool,
     ) -> Result<(), HostError> {
+        let current = self.engine.snapshot().settings.device(&fingerprint);
         self.engine
             .set_device_preferences(
                 &fingerprint,
-                DevicePreferences { preset: preset.map(preset_to), allow_auto_reconnect: auto_reconnect },
+                DevicePreferences { preset: preset.map(preset_to), allow_auto_reconnect: auto_reconnect, ..current },
             )
             .map_err(fail)
+    }
+
+    /// Streams the connected tablet at this percentage of its panel
+    /// resolution (one of the `resolutions` of the session).
+    pub fn set_resolution(&self, scale_percent: u32) -> Result<(), HostError> {
+        self.engine.set_resolution(scale_percent).map_err(fail)
+    }
+
+    /// Streams the connected tablet at up to `fps` frames per second (one
+    /// of the `frame_rates` of the session).
+    pub fn set_frame_rate(&self, fps: u32) -> Result<(), HostError> {
+        self.engine.set_frame_rate(fps).map_err(fail)
     }
 
     pub fn update_settings(&self, settings: SettingsView) {
