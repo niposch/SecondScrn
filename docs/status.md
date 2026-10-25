@@ -72,6 +72,38 @@ dozes); with 200 ms: 28 ms / 62 ms. The keepalive is now 200 ms.
 Touch no longer leaves the mouse cursor on the tablet display: its position is
 restored after each touch gesture unless the mouse was moved meanwhile.
 
+### Latency, frame rate and picture integrity (0.1, fourth pass)
+
+Measured on the tablet with an animated test window on its monitor:
+
+* **Corrupted video (ghost cursors, smeared blocks) and low tablet frame
+  rate:** str0m 0.24.1 delivered HEVC pictures made of several slices as
+  several frames (the NVENC preset below produces two slices per picture).
+  Fixed in a vendored str0m (`vendor/str0m`, one line) with a regression
+  test. Before: 1.7× more frames received than sent, 0–14 fps shown; after:
+  frames match, 40–58 fps at a 60 fps setting.
+* **Encoder latency:** NVENC quality-vs-speed 70 → 33: 11.6 → 4.8 ms per
+  3200×2136 frame.
+* **Decoder latency:** maximum operating rate for Qualcomm decoders: ~27 →
+  ~13 ms; frames presented at the current time instead of their stream
+  timestamp (the platform paced them like video and held some for seconds);
+  frames that waited > 250 ms for the decoder are skipped to the next
+  keyframe.
+* **Frame rates above 60:** Windows Graphics Capture delivered at most 60
+  frames/s by default (16 ms minimum update interval, now 1 ms); the tablet
+  asks the display for the stream's rate and reports the panel's maximum
+  (144 Hz on the test tablet). 1600×1068 now streams at 70–85 fps.
+* **Windows scaling** of the tablet's monitor from the tablet (stepper in
+  the session options).
+* **Snapdragon GSR 1** upscales streams below panel resolution on Adreno
+  GPUs (toggle in the session options); verified visually at 1600×1068 →
+  3200×2136. GSR 2 is not applicable (temporal, needs a game engine's motion
+  vectors and depth).
+* **Monitor position** is remembered by SecondScrn and restored on every
+  attach, resolution change and rotation (Windows' own memory is per display
+  combination and was lost whenever displays or modes changed). Verified by
+  moving the monitor, restarting the session and checking it returned.
+
 ## Not yet verified (hardware-dependent claims)
 
 * End-to-end latency, smoothness at 60 fps, battery, thermals, colour accuracy
@@ -83,6 +115,8 @@ restored after each touch gesture unless the mouse was moved meanwhile.
 * Pen pressure/tilt on a physical stylus (the injection path is tested with
   synthetic frames; the tilt direction mapping from Android is unverified).
 * Three- and more-finger gestures on the physical tablet.
+* Snapdragon GSR on Adreno GPUs other than the test tablet's; image quality
+  compared with the compositor's scaling (only checked by eye).
 
 ## Known limitations
 

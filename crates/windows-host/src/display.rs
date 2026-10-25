@@ -91,6 +91,45 @@ pub fn active_vdd() -> Result<Option<String>> {
     Ok(cfg.paths.iter().find(|p| is_vdd(p)).and_then(source_gdi_name))
 }
 
+// --- Position in the desktop arrangement ---------------------------------------
+
+/// Top-left corner and size of an active display, in desktop coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+fn source_mode_index(cfg: &Config, gdi: &str) -> Option<usize> {
+    let path = cfg.paths.iter().find(|p| source_gdi_name(p).is_some_and(|n| n.eq_ignore_ascii_case(gdi)))?;
+    let idx = unsafe { path.sourceInfo.Anonymous.modeInfoIdx } as usize;
+    (idx < cfg.modes.len() && cfg.modes[idx].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE).then_some(idx)
+}
+
+pub fn placement(gdi: &str) -> Option<Placement> {
+    let cfg = query(QDC_ONLY_ACTIVE_PATHS).ok()?;
+    let m = unsafe { cfg.modes[source_mode_index(&cfg, gdi)?].Anonymous.sourceMode };
+    Some(Placement { x: m.position.x, y: m.position.y, width: m.width, height: m.height })
+}
+
+/// Moves an active display to `x`,`y` in the desktop arrangement, leaving
+/// every other display where it is (Windows still resolves overlaps).
+pub fn set_position(gdi: &str, x: i32, y: i32) -> Result<()> {
+    let mut cfg = query(QDC_ONLY_ACTIVE_PATHS)?;
+    let idx = source_mode_index(&cfg, gdi).context("display is not active")?;
+    unsafe {
+        let m = &mut cfg.modes[idx].Anonymous.sourceMode;
+        if (m.position.x, m.position.y) == (x, y) {
+            return Ok(());
+        }
+        m.position.x = x;
+        m.position.y = y;
+    }
+    apply(&cfg.paths, &cfg.modes)
+}
+
 // --- UI scaling ("Scale" in Settings → Display) ------------------------------
 //
 // Windows has no documented API for a monitor's scale factor. The Settings app

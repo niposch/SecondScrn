@@ -15,6 +15,80 @@ use secondscrn_session::platform::{DisplayInfo, DisplayLease, DisplayPlan, Platf
 use crate::display::{self, Mode};
 use crate::vdd;
 
+/// Where the user put the virtual monitor, remembered across sessions,
+/// resolution changes and rotation. Stored by the side it is attached to
+/// (relative to the primary display at 0,0), so a monitor left of or above
+/// the primary stays adjacent when its size changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SavedPlacement {
+    /// Left edge, or the right edge when the monitor is left of the primary.
+    x: i32,
+    from_right: bool,
+    /// Top edge, or the bottom edge when the monitor is above the primary.
+    y: i32,
+    from_bottom: bool,
+}
+
+impl SavedPlacement {
+    fn from(p: display::Placement) -> Self {
+        let (right, bottom) = (p.x + p.width as i32, p.y + p.height as i32);
+        let from_right = right <= 0;
+        let from_bottom = bottom <= 0;
+        SavedPlacement {
+            x: if from_right { right } else { p.x },
+            from_right,
+            y: if from_bottom { bottom } else { p.y },
+            from_bottom,
+        }
+    }
+
+    /// Top-left corner for a monitor of the given size.
+    fn origin(&self, width: u32, height: u32) -> (i32, i32) {
+        (
+            if self.from_right { self.x - width as i32 } else { self.x },
+            if self.from_bottom { self.y - height as i32 } else { self.y },
+        )
+    }
+}
+
+fn placement_file() -> std::path::PathBuf {
+    crate::default_data_dir().join("virtual-display-position.json")
+}
+
+fn load_placement() -> Option<SavedPlacement> {
+    serde_json::from_slice(&std::fs::read(placement_file()).ok()?).ok()
+}
+
+/// Remembers the monitor's current position if the user moved it.
+fn save_placement(gdi: &str) {
+    let Some(p) = display::placement(gdi) else { return };
+    let saved = SavedPlacement::from(p);
+    if load_placement() == Some(saved) {
+        return;
+    }
+    let path = placement_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match serde_json::to_vec(&saved) {
+        Ok(json) if std::fs::write(&path, &json).is_ok() => tracing::info!(?saved, "virtual monitor position saved"),
+        _ => tracing::debug!("could not save the virtual monitor position"),
+    }
+}
+
+/// Puts the monitor back where the user had it.
+fn restore_placement(gdi: &str) {
+    let (Some(saved), Some(now)) = (load_placement(), display::placement(gdi)) else { return };
+    let (x, y) = saved.origin(now.width, now.height);
+    if (x, y) == (now.x, now.y) {
+        return;
+    }
+    match display::set_position(gdi, x, y) {
+        Ok(()) => tracing::info!(x, y, "virtual monitor moved to its saved position"),
+        Err(e) => tracing::warn!(error = %e, "could not restore the virtual monitor position"),
+    }
+}
+
 #[derive(Default)]
 struct State {
     generation: u64,
@@ -82,6 +156,7 @@ impl VirtualDisplayManager {
             })?;
         }
         let gdi = attach_with_mode(mode, reloaded, &protected)?;
+        restore_placement(&gdi);
         let current = display::current_mode(&gdi).context("virtual monitor has no current mode")?;
         display::wait_for(|| crate::capture::monitor_by_device(&gdi), Duration::from_secs(5))
             .context("virtual monitor is not part of the desktop")?;
@@ -192,6 +267,9 @@ pub struct VddLease {
 
 impl DisplayLease for VddLease {
     fn info(&self) -> DisplayInfo {
+        // Called every couple of seconds while streaming: also notice when
+        // the user rearranges the monitor in Windows.
+        save_placement(&self.info.id);
         // Refresh in case the user changed the mode in Windows settings.
         let mut info = self.info.clone();
         if let Some(m) = display::current_mode(&info.id) {
@@ -225,7 +303,10 @@ impl DisplayLease for VddLease {
                     vdd::reload()
                 })?;
             }
+            // Remember a position the user set before the mode changes.
+            save_placement(&self.info.id);
             self.info.id = attach_with_mode(mode, reloaded, &protected)?;
+            restore_placement(&self.info.id);
             Ok(self.info())
         })();
         r.inspect(|i| {
@@ -237,6 +318,26 @@ impl DisplayLease for VddLease {
 
 impl Drop for VddLease {
     fn drop(&mut self) {
+        save_placement(&self.info.id);
         self.manager.release(self.generation, self.linger);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placement_keeps_the_monitor_adjacent_when_its_size_changes() {
+        let p = |x, y, width, height| display::Placement { x, y, width, height };
+        // Right of the primary: the left edge stays.
+        let right = SavedPlacement::from(p(3440, 200, 3200, 2136));
+        assert_eq!(right.origin(1600, 1068), (3440, 200));
+        // Left of the primary: the right edge stays at 0.
+        let left = SavedPlacement::from(p(-3200, 0, 3200, 2136));
+        assert_eq!(left.origin(1600, 1068), (-1600, 0));
+        // Above the primary, rotated to portrait: the bottom edge stays at 0.
+        let above = SavedPlacement::from(p(500, -2136, 3200, 2136));
+        assert_eq!(above.origin(2136, 3200), (500, -3200));
     }
 }

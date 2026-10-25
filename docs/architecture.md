@@ -108,6 +108,12 @@ VDD monitor ─(DWM)─► WGC frame (BGRA texture)
 
 ## Video path (Android)
 
+When the stream is smaller than the panel and Snapdragon GSR is on (Adreno
+GPUs), the decoder renders into an `AImageReader` instead; a GL thread takes
+the newest picture (`AHardwareBuffer` → EGLImage → external texture),
+converts it to RGB and runs the SGSR 1 shader at panel resolution into the
+`SurfaceView` (`android-client/src/upscale.rs`). Otherwise:
+
 `TransportEvent::Frame` → decode queue → decode thread (`AMediaCodec`
 input) → render thread releases output buffers to the `SurfaceView`'s
 `ANativeWindow` immediately. Every received frame is decoded (dropping one
@@ -170,6 +176,7 @@ holds a low-latency Wi-Fi lock while streaming.
 | Android bindings | UniFFI | UniFFI (+1 JNI function) | As preferred. |
 | Congestion control | WebRTC's (GCC/TWCC) | **RTCP-feedback AIMD**, NACK/RTX and PLI from str0m | str0m's GCC-coupled pacer adds seconds of latency for bursty desktop content (measured); loss and RTT still come from standard RTCP. |
 | Virtual monitor removal | — | CCD path attach/detach | VDD keeps ≥1 monitor even with count 0; detaching the path from the desktop works without elevation. |
+| WebRTC library | upstream crate | **str0m 0.24.1 vendored with one fix** (`vendor/str0m/SECONDSCRN-PATCH.md`) | Its HEVC depacketizer split multi-slice pictures into several frames. |
 
 ## Diagnostics
 

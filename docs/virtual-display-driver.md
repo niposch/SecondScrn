@@ -41,6 +41,12 @@ writable by your user.
   is snapshotted beforehand, configurations missing one are never applied, and
   any display that drops out is re-activated.
 * **Mode:** `ChangeDisplaySettingsEx` on the VDD monitor.
+* **Position:** where you put the monitor in *Settings → Display* is saved
+  (`%LOCALAPPDATA%\SecondScrnData\virtual-display-position.json`, relative to
+  the side it is attached to) and restored on every attach, resolution change
+  and rotation.
+* **Scale:** the tablet can change the monitor's Windows scale factor (the
+  same private display-config call the Settings app uses).
 * **Lifetime:** the monitor is kept for a configurable linger time after a
   disconnect (default 30 s), removed afterwards, and removed at startup if a
   previous run crashed.

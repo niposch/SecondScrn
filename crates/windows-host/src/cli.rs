@@ -118,6 +118,14 @@ pub fn main() -> Result<()> {
                 std::mem::forget(lease); // keep attached after exit
             }
             Some("detach") => crate::display::detach_vdd()?,
+            // Reads or moves the virtual monitor in the desktop arrangement.
+            Some("position") => {
+                let gdi = crate::display::active_vdd()?.context("the virtual monitor is not active")?;
+                if let (Some(x), Some(y)) = (args.get(2), args.get(3)) {
+                    crate::display::set_position(&gdi, x.parse()?, y.parse()?)?;
+                }
+                println!("{:?}", crate::display::placement(&gdi));
+            }
             // Reads or sets the Windows scale factor of the virtual monitor.
             Some("scale") => {
                 let gdi = crate::display::active_vdd()?.context("the virtual monitor is not active")?;
