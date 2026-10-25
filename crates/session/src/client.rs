@@ -883,6 +883,12 @@ impl DecodeWorker {
                             nk.store(true, Ordering::Relaxed);
                         }
                         WorkerMsg::Frame(f) => {
+                            // After a gap, decoding would reference missing
+                            // frames and smear text; hold the last good
+                            // picture until the requested keyframe arrives.
+                            if !f.contiguous && !f.keyframe {
+                                waiting_for_key = true;
+                            }
                             if waiting_for_key && !f.keyframe {
                                 nk.store(true, Ordering::Relaxed);
                                 continue;

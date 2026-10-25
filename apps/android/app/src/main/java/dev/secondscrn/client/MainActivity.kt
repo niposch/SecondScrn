@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
 
     /** Full-screen, screen-on presentation while the desktop is shown. */
     private fun setStreamingMode(streaming: Boolean) {
+        repo.setLowLatencyWifi(streaming)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         if (streaming) {
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

@@ -49,14 +49,8 @@ fn h264_frame(index: u32, keyframe: bool, size: usize) -> Vec<u8> {
 }
 
 async fn connect(codec: Codec) -> (MediaHandle, MediaHandle) {
-    let (pending, offer) = PendingSender::create(SenderConfig {
-        codec,
-        start_bitrate_bps: 5_000_000,
-        max_bitrate_bps: 50_000_000,
-        interfaces: InterfacePolicy::loopback_only(),
-    })
-    .await
-    .unwrap();
+    let (pending, offer) =
+        PendingSender::create(SenderConfig { codec, interfaces: InterfacePolicy::loopback_only() }).await.unwrap();
     assert!(!candidate_ports(&offer).is_empty(), "offer must carry candidates");
 
     let (receiver, answer) = accept_offer(

@@ -43,21 +43,30 @@ pub mod vdd;
 #[cfg(windows)]
 pub mod virtual_display;
 
-/// Makes desktop coordinates physical pixels on every monitor. Must run
-/// before any window or monitor API use.
+/// Process setup for the host: physical-pixel desktop coordinates on every
+/// monitor (before any window or monitor API use) and 1 ms timer resolution.
+/// Windows otherwise rounds every sleep/wait up to ~15.6 ms, which caps frame
+/// pacing near 32 fps and adds jitter to the transport's timers. Since
+/// Windows 10 2004 the resolution request only affects this process.
 #[cfg(windows)]
 pub fn init_dpi_awareness() {
+    use windows::Win32::Media::timeBeginPeriod;
     use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        timeBeginPeriod(1);
     }
 }
 
-/// `%LOCALAPPDATA%\SecondScrn` — identity, pairings, settings, logs.
-/// Velopack installs the app elsewhere, so this survives updates.
+/// `%LOCALAPPDATA%\SecondScrnData`: identity, pairings, settings and logs.
+/// Deliberately outside Velopack's install folder (`%LOCALAPPDATA%\SecondScrn`),
+/// which a (re)install replaces entirely.
 #[cfg(windows)]
 pub fn default_data_dir() -> std::path::PathBuf {
-    std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("SecondScrn")
+    std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("SecondScrnData")
 }
 
 #[cfg(windows)]

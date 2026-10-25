@@ -920,13 +920,8 @@ async fn stream(
     };
     let mut controller = BitrateController::new(policy_for(&config, preset));
     config.initial_bitrate_bps = controller.current().bitrate_bps;
-    let (pending, offer) = PendingSender::create(SenderConfig {
-        codec: config.codec,
-        start_bitrate_bps: config.initial_bitrate_bps,
-        max_bitrate_bps: controller.desired_bitrate(),
-        interfaces: inner.interfaces.clone(),
-    })
-    .await?;
+    let (pending, offer) =
+        PendingSender::create(SenderConfig { codec: config.codec, interfaces: inner.interfaces.clone() }).await?;
     ch.send(&HostMessage::SessionAccepted { stream: config.clone() }).await?;
     ch.send(&HostMessage::SdpOffer { sdp: offer }).await?;
     let answer = loop {
@@ -988,7 +983,6 @@ async fn stream(
                         if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
                             pipeline.set_target(t.bitrate_bps, t.fps);
                         }
-                        media.set_desired_bitrate(controller.desired_bitrate());
                     }
                     ClientMessage::DisplayChanged { display: req } => {
                         // Rotation/resize: reconfigure the monitor, restart the
@@ -1040,12 +1034,7 @@ async fn stream(
                         pipeline.request_keyframe();
                         inner.update_session(id, |s| s.phase = SessionPhase::Streaming);
                     }
-                    TransportEvent::BitrateEstimate(bps) => {
-                        metrics.bitrate_estimate_bps = Some(bps);
-                        if let Some(t) = controller.on_estimate(bps, Instant::now()) {
-                            pipeline.set_target(t.bitrate_bps, t.fps);
-                        }
-                    }
+                    TransportEvent::BitrateEstimate(_) => {}
                     TransportEvent::KeyframeRequested => pipeline.request_keyframe(),
                     TransportEvent::Stats(s) => {
                         let now = Instant::now();
@@ -1056,7 +1045,11 @@ async fn stream(
                             }
                         }
                         last_bytes = Some((s.bytes_sent, now));
-                        controller.on_network(metrics.send_rate_bps, s.loss);
+                        if let Some(t) = controller.on_feedback(s.loss, s.rtt, metrics.send_rate_bps, now) {
+                            tracing::debug!(?t, budget = controller.budget_bps(), congestion = ?controller.last_congestion(), "encoder target");
+                            pipeline.set_target(t.bitrate_bps, t.fps);
+                        }
+                        metrics.bitrate_estimate_bps = Some(controller.budget_bps());
                         metrics.bytes_sent = s.bytes_sent;
                         metrics.rtt_ms = s.rtt.map(|d| d.as_secs_f32() * 1000.0);
                         metrics.loss = s.loss;
@@ -1089,7 +1082,6 @@ async fn stream(
                     if let Some(t) = controller.set_policy(policy_for(&config, p)) {
                         pipeline.set_target(t.bitrate_bps, t.fps);
                     }
-                    media.set_desired_bitrate(controller.desired_bitrate());
                 }
             },
             _ = ping.tick() => {

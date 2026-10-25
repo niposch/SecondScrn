@@ -12,7 +12,20 @@ internal sealed class UpdateService
     /// <summary>Release feed. GitHub releases produced by the packaging workflow.</summary>
     public const string RepositoryUrl = "https://github.com/niposch/SecondScrn";
 
-    private readonly UpdateManager _manager = new(new GithubSource(RepositoryUrl, null, false));
+    private readonly UpdateManager _manager = new(CreateSource());
+
+    /// <summary>
+    /// SECONDSCRN_UPDATE_SOURCE overrides the feed with a local folder or URL
+    /// (used to test update packages before publishing them).
+    /// </summary>
+    private static IUpdateSource CreateSource()
+    {
+        var overrideSource = Environment.GetEnvironmentVariable("SECONDSCRN_UPDATE_SOURCE");
+        if (string.IsNullOrWhiteSpace(overrideSource)) return new GithubSource(RepositoryUrl, null, false);
+        return Directory.Exists(overrideSource)
+            ? new SimpleFileSource(new DirectoryInfo(overrideSource))
+            : new SimpleWebSource(overrideSource);
+    }
     private UpdateInfo? _pending;
 
     /// <summary>False for development builds that weren't installed by Velopack.</summary>

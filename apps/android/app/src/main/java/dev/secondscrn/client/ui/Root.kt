@@ -21,9 +21,11 @@ fun SecondScrnRoot(repo: ClientRepository, onStreamingChanged: (Boolean) -> Unit
         LaunchedEffect(Unit) { repo.client } // starts the engine
         return
     }
-    // Keep showing the desktop (last frame) while reconnecting.
+    // Keep showing the desktop (last frame) through a whole reconnect cycle
+    // (Reconnecting → Connecting → Negotiating); switching screens on every
+    // attempt would tear down and rebuild the video surface each time.
     val showStream = s.stream != null && when (s.phase) {
-        is Phase.Streaming, is Phase.Interrupted, is Phase.Reconnecting, is Phase.Negotiating -> true
+        is Phase.Streaming, is Phase.Interrupted, is Phase.Reconnecting, is Phase.Connecting, is Phase.Negotiating -> true
         else -> false
     }
     LaunchedEffect(showStream) { onStreamingChanged(showStream) }

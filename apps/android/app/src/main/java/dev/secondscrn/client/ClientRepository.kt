@@ -71,6 +71,7 @@ class ClientRepository(private val context: Context) {
      * monitor) and closed after a minute to save battery.
      */
     fun onBackground() {
+        setLowLatencyWifi(false)
         client.stopDiscovery()
         releaseMulticastLock()
         main.postDelayed(backgroundDisconnect, BACKGROUND_GRACE_MS)
@@ -114,6 +115,28 @@ class ClientRepository(private val context: Context) {
 
     private fun releaseMulticastLock() {
         multicastLock?.takeIf { it.isHeld }?.release()
+    }
+
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    /**
+     * While the desktop is shown, keep Wi-Fi out of power-save mode. Power
+     * save batches packets and causes tens of milliseconds of extra, jumpy
+     * latency, which is very visible when moving the mouse.
+     */
+    fun setLowLatencyWifi(enabled: Boolean) {
+        if (!enabled) {
+            wifiLock?.takeIf { it.isHeld }?.release()
+            return
+        }
+        if (wifiLock?.isHeld == true) return
+        val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        else @Suppress("DEPRECATION") WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        wifiLock = wifi.createWifiLock(mode, "secondscrn-stream").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
     }
 
     companion object {

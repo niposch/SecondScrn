@@ -32,6 +32,9 @@ pub use sdp_util::candidate_ports;
 
 /// Bitrate of the BWE before the first estimate arrives.
 pub const DEFAULT_START_BITRATE_BPS: u64 = 8_000_000;
+/// Receive-side reordering window (packets) and how long a hole may block it.
+const REORDER_PACKETS: usize = 2048;
+const REORDER_TIMEOUT: Duration = Duration::from_millis(250);
 /// Minimum interval between keyframe requests from the receiver.
 const KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
 /// How long ICE may stay disconnected before the peer is declared lost.
@@ -175,8 +178,93 @@ pub enum TransportEvent {
 }
 
 enum Command {
-    SetDesiredBitrate(u64),
     RequestKeyframe,
+    SetImpairment(Option<Impairment>),
+}
+
+/// Network impairment applied to this peer's outgoing packets, for
+/// reproducible tests of loss recovery, adaptation and interruptions.
+/// Deterministic for a given seed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Impairment {
+    /// Probability that a loss event starts at a packet (0..=1).
+    pub loss: f32,
+    /// Packets dropped per loss event (1 = independent loss, >1 = bursts).
+    pub burst: u32,
+    /// Constant one-way delay added to every packet.
+    pub delay: Duration,
+    /// Uniform random extra delay in 0..jitter (may reorder packets).
+    pub jitter: Duration,
+    /// Bottleneck rate; packets wait in a FIFO and are dropped when it holds
+    /// more than `queue_limit` of data.
+    pub bandwidth_bps: Option<u64>,
+    pub queue_limit: Duration,
+    pub seed: u64,
+}
+
+impl Impairment {
+    /// Drops everything: a complete network outage.
+    pub fn outage() -> Self {
+        Impairment { loss: 1.0, burst: 1, ..Default::default() }
+    }
+}
+
+/// Runtime state of an active impairment.
+struct Impairer {
+    cfg: Impairment,
+    rng: u64,
+    burst_left: u32,
+    /// Time the bottleneck link becomes free.
+    link_free: Instant,
+    queue: std::collections::BinaryHeap<std::cmp::Reverse<Delayed>>,
+    seq: u64,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct Delayed {
+    at: Instant,
+    seq: u64,
+    socket: usize,
+    destination: SocketAddr,
+    data: Vec<u8>,
+}
+
+impl Impairer {
+    fn new(cfg: Impairment) -> Self {
+        Impairer { rng: cfg.seed | 1, cfg, burst_left: 0, link_free: Instant::now(), queue: Default::default(), seq: 0 }
+    }
+
+    /// xorshift64*: tiny, deterministic, good enough for test randomness.
+    fn rand(&mut self) -> f64 {
+        self.rng ^= self.rng >> 12;
+        self.rng ^= self.rng << 25;
+        self.rng ^= self.rng >> 27;
+        (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Decides the fate of a packet: `None` = dropped, otherwise when to send.
+    fn schedule(&mut self, now: Instant, len: usize) -> Option<Instant> {
+        if self.burst_left > 0 {
+            self.burst_left -= 1;
+            return None;
+        }
+        if self.cfg.loss > 0.0 && self.rand() < self.cfg.loss as f64 {
+            self.burst_left = self.cfg.burst.saturating_sub(1);
+            return None;
+        }
+        let mut at = now;
+        if let Some(bps) = self.cfg.bandwidth_bps.filter(|b| *b > 0) {
+            let start = self.link_free.max(now);
+            if start.saturating_duration_since(now) > self.cfg.queue_limit.max(Duration::from_millis(1)) {
+                return None; // bottleneck queue full: tail drop
+            }
+            let tx = Duration::from_secs_f64(len as f64 * 8.0 / bps as f64);
+            self.link_free = start + tx;
+            at = self.link_free;
+        }
+        let jitter = self.cfg.jitter.mul_f64(self.rand());
+        Some(at + self.cfg.delay + jitter)
+    }
 }
 
 /// Cloneable, thread-safe handle the encoder uses to hand frames to the
@@ -226,22 +314,21 @@ impl MediaHandle {
         self.frames.frames_dropped()
     }
 
-    /// Upper bound the bandwidth estimator should probe towards.
-    pub fn set_desired_bitrate(&self, bps: u64) {
-        let _ = self.commands.try_send(Command::SetDesiredBitrate(bps));
-    }
-
     /// Receiver: ask the sender for a keyframe (throttled internally).
     pub fn request_keyframe(&self) {
         let _ = self.commands.try_send(Command::RequestKeyframe);
+    }
+
+    /// Applies (or with `None` removes) a network impairment to this peer's
+    /// outgoing packets. Testing aid; never used in normal operation.
+    pub fn set_impairment(&self, impairment: Option<Impairment>) {
+        let _ = self.commands.try_send(Command::SetImpairment(impairment));
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct SenderConfig {
     pub codec: Codec,
-    pub start_bitrate_bps: u64,
-    pub max_bitrate_bps: u64,
     pub interfaces: InterfacePolicy,
 }
 
@@ -252,7 +339,6 @@ pub struct PendingSender {
     sockets: Vec<UdpSocket>,
     mid: Mid,
     codec: Codec,
-    max_bitrate_bps: u64,
 }
 
 fn rtc_config(codec: Codec) -> RtcConfig {
@@ -262,7 +348,17 @@ fn rtc_config(codec: Codec) -> RtcConfig {
     cfg.set_initial_stun_rto(Duration::from_millis(200));
     cfg.set_max_stun_rto(Duration::from_millis(1000));
     cfg.set_max_stun_retransmits(5);
-    let cfg = cfg.clear_codecs().set_send_buffer_video(4000).set_stats_interval(Some(Duration::from_secs(1)));
+    let cfg = cfg
+        .clear_codecs()
+        .set_send_buffer_video(4000)
+        // A desktop keyframe at tablet resolution spans hundreds of packets;
+        // the default window (30) silently drops such frames.
+        .set_reordering_size_video(REORDER_PACKETS)
+        // Give NACK repair a few LAN round trips, then abandon the hole: the
+        // gap triggers a keyframe request instead of a stalled picture (the
+        // default waits 2 s).
+        .set_reordering_timeout_video(Some(REORDER_TIMEOUT))
+        .set_stats_interval(Some(Duration::from_secs(1)));
     match codec {
         Codec::H264 => cfg.enable_h264(true),
         Codec::H265 => cfg.enable_h265(true),
@@ -333,25 +429,23 @@ impl PendingSender {
     pub async fn create(config: SenderConfig) -> Result<(Self, String), TransportError> {
         install_crypto();
         let sockets = bind_sockets(&config.interfaces).await?;
-        let mut rtc = rtc_config(config.codec)
-            .enable_bwe(Some(str0m::bwe::Bitrate::bps(config.start_bitrate_bps)))
-            .build(Instant::now());
+        // No str0m BWE: its pacer sends at 1.1x the GCC estimate, which for an
+        // often-idle desktop collapses to the idle rate and then delays every
+        // large frame for seconds. Without BWE str0m sends immediately;
+        // congestion is handled by the session's RTCP-based controller.
+        let mut rtc = rtc_config(config.codec).build(Instant::now());
         add_candidates(&mut rtc, &sockets)?;
         let mut change = rtc.sdp_api();
         let mid = change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
         let (offer, pending) = change.apply().expect("offer has one media");
         let sdp = offer.to_sdp_string();
-        Ok((
-            PendingSender { rtc, pending, sockets, mid, codec: config.codec, max_bitrate_bps: config.max_bitrate_bps },
-            sdp,
-        ))
+        Ok((PendingSender { rtc, pending, sockets, mid, codec: config.codec }, sdp))
     }
 
     /// Applies the client's answer and starts the I/O task.
     pub fn accept_answer(mut self, answer_sdp: &str) -> Result<MediaHandle, TransportError> {
         let answer = SdpAnswer::from_sdp_string(answer_sdp).map_err(|e| TransportError::Sdp(e.to_string()))?;
         self.rtc.sdp_api().accept_answer(self.pending, answer)?;
-        self.rtc.bwe().set_desired_bitrate(str0m::bwe::Bitrate::bps(self.max_bitrate_bps));
         let codec = self.codec;
         Ok(spawn_driver(self.rtc, self.sockets, self.mid, Role::Sender { codec, pt: None }))
     }
@@ -453,6 +547,8 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
         estimate: None,
         stats: TransportStats::default(),
         first_frame_time: None,
+        impairer: None,
+        last_seq: None,
     };
     tokio::spawn(async move {
         let reason = driver.run(cmd_rx, frame_rx, net_rx).await;
@@ -481,6 +577,9 @@ struct Driver {
     estimate: Option<u64>,
     stats: TransportStats,
     first_frame_time: Option<Instant>,
+    impairer: Option<Impairer>,
+    /// Highest RTP sequence number of an emitted frame (receiver).
+    last_seq: Option<u64>,
 }
 
 impl Driver {
@@ -500,7 +599,8 @@ impl Driver {
             {
                 break "peer unreachable".to_string();
             }
-            let wait = timeout.saturating_duration_since(Instant::now());
+            let next = self.flush_delayed().map_or(timeout, |due| due.min(timeout));
+            let wait = next.saturating_duration_since(Instant::now());
             let input_result = tokio::select! {
                 biased;
                 cmd = commands.recv() => match cmd {
@@ -539,13 +639,54 @@ impl Driver {
 
     fn handle_command(&mut self, cmd: Command) -> Result<(), TransportError> {
         match cmd {
-            Command::SetDesiredBitrate(bps) => {
-                self.rtc.bwe().set_desired_bitrate(str0m::bwe::Bitrate::bps(bps));
-                Ok(())
-            }
             Command::RequestKeyframe => {
                 self.request_keyframe();
                 Ok(())
+            }
+            Command::SetImpairment(cfg) => {
+                // Packets already delayed are still delivered.
+                let pending = self.impairer.take().map(|i| i.queue).unwrap_or_default();
+                self.impairer = cfg.map(Impairer::new);
+                if let Some(i) = &mut self.impairer {
+                    i.queue = pending;
+                } else {
+                    for std::cmp::Reverse(d) in pending {
+                        let _ = self.sockets[d.socket].try_send_to(&d.data, d.destination);
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Sends delayed packets that are due; returns when the next one is.
+    fn flush_delayed(&mut self) -> Option<Instant> {
+        let imp = self.impairer.as_mut()?;
+        let now = Instant::now();
+        while let Some(std::cmp::Reverse(d)) = imp.queue.peek() {
+            if d.at > now {
+                return Some(d.at);
+            }
+            let std::cmp::Reverse(d) = imp.queue.pop().expect("peeked");
+            let _ = self.sockets[d.socket].try_send_to(&d.data, d.destination);
+        }
+        None
+    }
+
+    fn transmit(&mut self, source: SocketAddr, destination: SocketAddr, data: &[u8]) {
+        let Some(socket) = self.sockets.iter().position(|s| s.local_addr().ok() == Some(source)) else { return };
+        match &mut self.impairer {
+            None => {
+                // UDP send errors (e.g. no route) are transient; ICE handles failover.
+                let _ = self.sockets[socket].try_send_to(data, destination);
+            }
+            Some(imp) => {
+                let now = Instant::now();
+                if let Some(at) = imp.schedule(now, data.len()) {
+                    imp.seq += 1;
+                    let seq = imp.seq;
+                    imp.queue.push(std::cmp::Reverse(Delayed { at, seq, socket, destination, data: data.to_vec() }));
+                }
             }
         }
     }
@@ -598,10 +739,8 @@ impl Driver {
             match self.rtc.poll_output()? {
                 Output::Timeout(t) => return Ok(t),
                 Output::Transmit(t) => {
-                    if let Some(sock) = self.sockets.iter().find(|s| s.local_addr().ok() == Some(t.source)) {
-                        // UDP send errors (e.g. no route) are transient; ICE handles failover.
-                        let _ = sock.try_send_to(&t.contents, t.destination);
-                    }
+                    self.transmit(t.source, t.destination, &t.contents);
+                    self.flush_delayed();
                 }
                 Output::Event(e) => self.handle_event(e).await,
             }
@@ -629,7 +768,10 @@ impl Driver {
                 let remote = None;
                 self.emit(TransportEvent::Connected { remote }).await;
             }
-            Event::IceConnectionStateChange(state) => match state {
+            Event::IceConnectionStateChange(state) => match {
+                tracing::debug!(?state, "ice state");
+                state
+            } {
                 IceConnectionState::Disconnected if self.disconnected_since.is_none() => {
                     self.disconnected_since = Some(Instant::now());
                     self.emit(TransportEvent::Interrupted).await;
@@ -648,7 +790,14 @@ impl Driver {
                     str0m::format::CodecExtra::Av1(x) => x.is_keyframe,
                     _ => false,
                 };
-                if !data.contiguous {
+                // str0m doesn't flag every gap (frames it could never
+                // complete are simply not emitted), so check RTP sequence
+                // continuity as well.
+                let (start, end) = (**data.seq_range.start(), **data.seq_range.end());
+                let gap = self.last_seq.is_some_and(|last| start > last + 1);
+                self.last_seq = Some(self.last_seq.map_or(end, |l| l.max(end)));
+                let contiguous = data.contiguous && !gap;
+                if !contiguous {
                     self.request_keyframe();
                 }
                 let frame = ReceivedFrame {
@@ -656,7 +805,7 @@ impl Driver {
                     rtp_time: data.time.numer(),
                     arrival: data.network_time,
                     keyframe,
-                    contiguous: data.contiguous,
+                    contiguous,
                 };
                 if self.events.try_send(TransportEvent::Frame(frame)).is_err() {
                     // Decoder is behind: the dropped frame breaks the reference
@@ -679,18 +828,16 @@ impl Driver {
                 self.stats.bytes_sent = s.peer_bytes_tx;
                 self.stats.bytes_received = s.peer_bytes_rx;
                 self.stats.bitrate_estimate_bps = s.bwe_tx.map(|b| b.as_u64()).or(self.estimate);
-                // Sender: TWCC feedback-based loss. The receiver's transport-wide
-                // estimate counts sequence gaps (e.g. dropped probe padding)
-                // and overstates loss; it uses RTCP stream stats instead.
-                if let Role::Sender { .. } = self.role {
-                    self.stats.loss = s.egress_loss_fraction.or(self.stats.loss);
-                }
+                // Loss comes from RTCP stream stats on both sides (receiver
+                // reports / own reception); the transport-wide figures count
+                // sequence gaps such as dropped padding and overstate it.
                 self.emit(TransportEvent::Stats(self.stats)).await;
             }
             Event::MediaEgressStats(s) => {
                 self.stats.nacks = s.nacks;
                 self.stats.plis = s.plis;
                 self.stats.rtt = s.rtt.or(self.stats.rtt);
+                self.stats.loss = s.loss.or(self.stats.loss);
                 if let Some(r) = s.remote {
                     self.stats.jitter = Some(r.jitter);
                 }

@@ -11,7 +11,17 @@ public static class Program
     private static int Main(string[] args)
     {
         // Velopack install/update hooks must run before anything else.
-        VelopackApp.Build().Run();
+        VelopackApp.Build()
+            // Clean uninstall: remove the "start with Windows" entry. The
+            // virtual display driver is left alone (other apps may use it).
+            .OnBeforeUninstallFastCallback(_ =>
+            {
+                Services.StartupService.Apply(false, false);
+                // Pairings and the PC identity go with the app.
+                var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SecondScrnData");
+                try { if (Directory.Exists(data)) Directory.Delete(data, recursive: true); } catch (IOException) { }
+            })
+            .Run();
         WinRT.ComWrappersSupport.InitializeComWrappers();
 
         // Single instance: a second launch activates the running app.
