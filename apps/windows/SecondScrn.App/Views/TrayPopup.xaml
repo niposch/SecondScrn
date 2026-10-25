@@ -40,7 +40,7 @@
         </Grid>
         <TextBlock Grid.Row="2" Text="Open SecondScrn on your tablet to connect." TextWrapping="Wrap"
                    Visibility="{x:Bind ViewModel.IdleVisibility, Mode=OneWay}" Style="{StaticResource Caption}" />
-        <ComboBox Grid.Row="3" Header="Quality" ItemsSource="{x:Bind ViewModel.Presets}"
+        <ComboBox Grid.Row="3" Header="Preset" ItemsSource="{x:Bind ViewModel.Presets}"
                   SelectedIndex="{x:Bind ViewModel.PresetIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" />
         <Grid Grid.Row="4" ColumnSpacing="8" Visibility="{x:Bind ViewModel.ConnectedVisibility, Mode=OneWay}">
             <Grid.ColumnDefinitions>

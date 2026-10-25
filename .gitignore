@@ -7,6 +7,12 @@
 .gradle/
 **/build/
 local.properties
+keystore.properties
+*.jks
+*.keystore
+*.pfx
+*.p12
+/.secrets/
 *.apk
 *.aab
 /releases/

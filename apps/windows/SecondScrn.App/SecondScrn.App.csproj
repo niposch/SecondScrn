@@ -22,7 +22,7 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\SecondScrn.ico</ApplicationIcon>
-    <Version>0.1.0</Version>
+    <Version>0.0.1</Version>
     <Product>SecondScrn</Product>
     <Company>SecondScrn contributors</Company>
     <Copyright>MIT License</Copyright>
@@ -49,6 +49,8 @@
     <Content Include="$(RepoRoot)\packaging\vdd\*.ps1" Link="Driver\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="$(RepoRoot)\LICENSE" Link="LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="$(RepoRoot)\THIRD_PARTY_NOTICES.md" Link="THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(RepoRoot)\THIRD_PARTY_NOTICES.md')" />
+    <Content Include="$(RepoRoot)\licenses\*.txt" Link="Licenses\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="$(RepoRoot)\crates\android-client\src\shaders\LICENSE-SGSR.txt" Link="Licenses\LICENSE-SGSR.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- Build the Rust core and regenerate the C# bindings before compiling. -->

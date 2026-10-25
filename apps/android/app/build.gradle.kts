@@ -17,7 +17,8 @@ android {
 
     defaultConfig {
         applicationId = "dev.secondscrn.client"
-        minSdk = 28
+        // The native presenter links ASurfaceControl APIs introduced in 29.
+        minSdk = 29
         targetSdk = 36
         versionName = workspaceVersion
         versionCode = workspaceVersion.split(".").fold(0) { acc, p -> acc * 1000 + (p.toIntOrNull() ?: 0) }
@@ -97,7 +98,15 @@ val generateBindings by tasks.registering(Exec::class) {
     )
 }
 
-tasks.named("preBuild") { dependsOn(generateBindings) }
+val bundleNotices by tasks.registering(Sync::class) {
+    from(repoRoot.resolve("THIRD_PARTY_NOTICES.md"))
+    from(repoRoot.resolve("LICENSE"))
+    from(repoRoot.resolve("licenses")) { include("RUST-NOTICES.txt", "UPSTREAM-NOTICES.txt") }
+    from(repoRoot.resolve("crates/android-client/src/shaders/LICENSE-SGSR.txt"))
+    into(layout.buildDirectory.dir("generated/notices/assets/licenses"))
+}
+android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/notices/assets"))
+tasks.named("preBuild") { dependsOn(generateBindings, bundleNotices) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)

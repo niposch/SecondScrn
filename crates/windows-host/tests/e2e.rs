@@ -218,8 +218,9 @@ fn touch_and_pen_injection_on_virtual_monitor() {
         vec![c(0, PointerAction::Down, 0.90)],
         vec![c(0, PointerAction::Move, 0.91), c(1, PointerAction::Down, 0.95)],
         vec![c(0, PointerAction::Move, 0.92), c(1, PointerAction::Move, 0.96)],
-        vec![c(0, PointerAction::Up, 0.92), c(1, PointerAction::Move, 0.96)],
-        vec![c(1, PointerAction::Up, 0.96)],
+        // Android's final UP may contain motion after its last MOVE.
+        vec![c(0, PointerAction::Up, 0.93), c(1, PointerAction::Move, 0.97)],
+        vec![c(1, PointerAction::Up, 0.98)],
     ];
     for (seq, contacts) in frames.into_iter().enumerate() {
         let ev = InputEvent::Touch { seq: seq as u64 + 1, contacts };

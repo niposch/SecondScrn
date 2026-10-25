@@ -1,6 +1,25 @@
 # Status, known limitations and roadmap
 
-Version 0.1 — first functional release candidate.
+Version 0.0.1 — first public release.
+
+## Release validation (2026-10-25)
+
+The final workspace unit/integration suite passed (96 tests, 4 opt-in tests
+ignored). Windows packaging and signed Android release builds succeeded.
+The [nine-case physical performance matrix](performance-0.0.1.md) was rerun
+without scrcpy: native resolution reached 117.5 / 141.1 reported fps at
+120 / 144 fps settings, with 0 % reported loss in every case. Earlier results
+below are historical measurements, not current throughput limits.
+
+An additional hardware-test run accepted touch/pen injection, but its two
+display/capture tests failed while the external VDD 2.35 driver was unstable.
+The driver also crashed during a later resolution-change probe and was
+restarted successfully with administrator approval. These extra hardware
+checks are not counted as passing for this release.
+
+One-finger scrolling was reported to travel less than the finger movement
+in Google News on Brave. The cause remains unconfirmed; no verified fix is
+included in 0.0.1.
 
 ## Verified
 
@@ -164,12 +183,12 @@ this tablet sustains at native resolution; 120+ needs a lower resolution.
 
 * End-to-end latency, smoothness at 60 fps, battery, thermals, colour accuracy
   on the tablet panel, sleep/resume — see the procedure in
-  [testing.md](testing.md#physical-tablet-validation-not-yet-performed).
+  [testing.md](testing.md#physical-tablet-validation).
 * AMD/Intel hardware encoders (code path is vendor-neutral Media Foundation,
   only NVIDIA was available).
 * Velopack update apply (download + restart) end to end.
-* Pen pressure/tilt on a physical stylus (the injection path is tested with
-  synthetic frames; the tilt direction mapping from Android is unverified).
+* Physical stylus tilt direction and eraser behavior across devices. Pen and
+  pressure were manually verified by the user on the test tablet.
 * Three- and more-finger gestures on the physical tablet.
 * Frame pacing of the Snapdragon GSR path at 120 fps (some unevenness
   measured: it presents without waiting for vsync).
@@ -195,8 +214,8 @@ this tablet sustains at native resolution; 120+ needs a lower resolution.
 * The virtual monitor stays connected-but-detached in Windows between
   sessions (the driver keeps at least one monitor); it is not part of the
   desktop and can't receive windows.
-* Builds are unsigned until certificates are available (SmartScreen warning on
-  Windows; Android release signing needs a keystore).
+* Windows builds are not code-signed (SmartScreen may warn). Android releases
+  use a dedicated signing key; development APKs use a different key.
 
 ## Roadmap
 

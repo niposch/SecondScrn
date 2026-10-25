@@ -50,11 +50,12 @@ decoder, session overlay, touch → mouse input, automatic reconnection after
 killing the host, cleanup of the orphaned monitor, host-identity-change
 detection.
 
-## Physical tablet validation (not yet performed)
+## Physical tablet validation
 
-Emulator results say nothing about hardware decoding performance. On a real
-tablet, record for each item the device, Android version, Wi-Fi standard and
-access point:
+Physical streaming, touch, pen and pressure have been tested on a Xiaomi
+Pad 7 Pro; see [status.md](status.md). The following checklist also covers
+measurements still outstanding. Record the device, Android version, Wi-Fi
+standard and access point for each run:
 
 | Item | Procedure | Pass criteria |
 |---|---|---|

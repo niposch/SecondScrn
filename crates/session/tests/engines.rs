@@ -241,6 +241,47 @@ async fn resolution_follows_tablet_pc_and_windows_settings() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn presets_set_resolution_and_frame_rate() {
+    let r = rig().await;
+    streaming(&r).await;
+    let mut cs = r.client.subscribe();
+    r.client.set_preset(secondscrn_protocol::QualityPreset::LowBandwidth);
+    // 67 % of 1280x800 at 30 fps (the panel offers 30 and 60).
+    wait(&mut cs, 10, "weak wi-fi preset", |s: &ClientSnapshot| {
+        s.stream.as_ref().is_some_and(|c| (c.width, c.height, c.max_fps, c.scale_percent) == (858, 536, 30, 67))
+    })
+    .await;
+    // A size picked afterwards sticks.
+    r.client.set_resolution(100);
+    wait(&mut cs, 10, "native", |s: &ClientSnapshot| stream_size(s) == Some((1280, 800, 100))).await;
+    let mut hs = r.host.subscribe();
+    let device = r.host.snapshot().paired_devices[0].clone();
+    assert_eq!(device.preferences.preset, Some(secondscrn_protocol::QualityPreset::LowBandwidth));
+    // Saving an unrelated preference must not reapply the preset defaults.
+    r.host.set_device_preferences(&device.fingerprint, device.preferences.clone()).unwrap();
+    r.client.disconnect();
+    wait(&mut hs, 10, "disconnected", |s: &HostSnapshot| s.session.is_none()).await;
+    assert!(r.client.connect_last());
+    wait(&mut cs, 10, "remembered custom resolution", |s: &ClientSnapshot| {
+        s.phase == ClientPhase::Streaming
+            && s.stream.as_ref().is_some_and(|c| (c.width, c.height, c.max_fps) == (1280, 800, 30))
+    })
+    .await;
+    r.client.disconnect();
+    wait(&mut hs, 10, "disconnected again", |s: &HostSnapshot| s.session.is_none()).await;
+    // A preset selected for an offline tablet applies on its next connection.
+    let mut prefs = device.preferences;
+    prefs.preset = Some(secondscrn_protocol::QualityPreset::Smooth);
+    r.host.set_device_preferences(&device.fingerprint, prefs).unwrap();
+    assert!(r.client.connect_last());
+    wait(&mut cs, 10, "offline preset", |s: &ClientSnapshot| {
+        s.phase == ClientPhase::Streaming
+            && s.stream.as_ref().is_some_and(|c| (c.width, c.height, c.max_fps, c.scale_percent) == (960, 600, 60, 75))
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tablet_changes_windows_scaling() {
     let r = rig().await;
     streaming(&r).await;

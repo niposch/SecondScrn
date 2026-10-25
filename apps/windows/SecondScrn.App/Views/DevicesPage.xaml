@@ -33,12 +33,12 @@
                                     </StackPanel>
                                     <TextBlock Text="{x:Bind Details}" Style="{StaticResource Caption}" />
                                 </StackPanel>
-                                <ComboBox Grid.Column="1" Header="Quality" MinWidth="170" Tag="{x:Bind}"
+                                <ComboBox Grid.Column="1" Header="Preset" MinWidth="170" Tag="{x:Bind}"
                                           SelectedIndex="{x:Bind PresetIndex}" SelectionChanged="OnPresetChanged">
                                     <x:String>Use global setting</x:String>
                                     <x:String>Automatic</x:String>
                                     <x:String>High quality</x:String>
-                                    <x:String>Balanced</x:String>
+                                    <x:String>Smooth</x:String>
                                     <x:String>Weak Wi-Fi</x:String>
                                 </ComboBox>
                                 <ToggleSwitch Grid.Column="2" Header="Reconnect automatically" Tag="{x:Bind}"

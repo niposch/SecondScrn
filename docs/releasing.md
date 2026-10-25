@@ -3,8 +3,8 @@
 ## Windows (Velopack)
 
 ```powershell
-./packaging/windows/build-release.ps1 -Version 0.2.0            # -> releases/
-./packaging/windows/build-release.ps1 -Version 0.2.0 -SignParams "/a /fd sha256 /tr http://timestamp.digicert.com /td sha256"
+./packaging/windows/build-release.ps1 -Version 0.0.1            # -> releases/
+./packaging/windows/build-release.ps1 -Version 0.0.1 -SignParams "/a /fd sha256 /tr http://timestamp.digicert.com /td sha256"
 ```
 
 The script builds the Rust core (release), publishes the WinUI app
@@ -59,17 +59,37 @@ keyAlias=secondscrn
 keyPassword=…
 ```
 
-Without it, release builds are unsigned. Release builds are minified (R8);
+The first public release uses a dedicated RSA signing key, stored locally in
+`.secrets/android-release.jks`, with the signing configuration in
+`apps/android/keystore.properties`. Both are gitignored. Back up both files
+privately: Android updates must retain the same signing key. Never upload
+them as release assets or include them in a source archive. A debug-signed
+development installation must be uninstalled before installing the public
+release; warn testers that doing so removes pairings and settings.
+
+Without a signing configuration, release builds are unsigned and must not be
+published as an installable APK. Release builds are minified (R8);
 `proguard-rules.pro` keeps JNA, the UniFFI bindings and the JNI bridge.
 `versionName` comes from the workspace version in `Cargo.toml`.
 
 ## Checklist
 
-1. Bump `version` in `Cargo.toml` (also used by the Android build) and pass the
-   same version to `build-release.ps1`.
+1. Bump `version` in `Cargo.toml` (also used by the Android build), the Windows
+   csproj version, and `Cargo.lock`; pass the same version to `build-release.ps1`.
 2. `cargo test`, `cargo test -p secondscrn-windows-host -- --ignored` on a
    machine with GPU + driver, Android emulator smoke test.
-3. Update `docs/status.md` and `THIRD_PARTY_NOTICES.md` (run
-   `cargo about`/review new dependencies).
+3. Update `docs/status.md`, the README and release notes. Refresh notices with
+   `python tools/dependency_inventory.py` and `python tools/bundle_notices.py`
+   after restoring dependencies; review upstream licence changes. Both apps
+   bundle the collected notices.
 4. Build both platforms, test install → update from the previous release.
 5. Tag `v<version>`, publish the release files and the APK.
+
+## First release (0.0.1)
+
+Publish the Windows Setup.exe, Portable.zip, full.nupkg, `RELEASES` and
+`releases.win.json`, plus the signed APK named `SecondScrn-0.0.1-android.apk`.
+The first release has no delta package and no previous public version for an
+update-install test. Include `SHA256SUMS.txt` covering the binary assets.
+Verify the APK with the installed Android build-tools `apksigner verify`
+command. See [release notes](release-notes-0.0.1.md) for scope and limitations.

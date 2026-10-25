@@ -240,22 +240,35 @@ impl HostEngine {
         Ok(removed)
     }
 
-    pub fn set_device_preferences(&self, fingerprint_hex: &str, prefs: DevicePreferences) -> Result<(), SessionError> {
+    pub fn set_device_preferences(
+        &self,
+        fingerprint_hex: &str,
+        mut prefs: DevicePreferences,
+    ) -> Result<(), SessionError> {
         let fp = Fingerprint::from_hex(fingerprint_hex).ok_or(SessionError::InvalidInput("fingerprint"))?;
         if !lock(&self.inner.trust).is_trusted(&fp) {
             return Err(SessionError::NotFound("paired device"));
         }
-        let (effective, scale_changed) = {
+        let (effective, preset_changed, scale_changed) = {
             let mut s = lock(&self.inner.settings);
-            let old = s.device(fingerprint_hex).scale_percent();
+            let old = s.device(fingerprint_hex);
+            let old_preset = old.preset.unwrap_or(s.preset);
+            let effective = prefs.preset.unwrap_or(s.preset);
+            if effective != old_preset {
+                // Resolve the new preset against the panel on next connect.
+                prefs.resolution_scale = None;
+                prefs.max_fps = None;
+            }
             s.devices.insert(fingerprint_hex.to_string(), prefs.clone());
-            (prefs.preset.unwrap_or(s.preset), old != prefs.scale_percent())
+            (effective, effective != old_preset, old.scale_percent() != prefs.scale_percent())
         };
         self.inner.save_settings();
         let st = lock(&self.inner.state);
         if let Some(s) = st.session.as_ref().filter(|s| s.fingerprint == fp) {
-            let _ = s.commands.send(SessionCommand::SetPreset(effective));
-            if scale_changed {
+            if preset_changed {
+                let _ = s.commands.send(SessionCommand::SetPreset(effective));
+            }
+            if scale_changed && !preset_changed {
                 let _ = s.commands.send(SessionCommand::SetResolution(prefs.scale_percent()));
             }
         }
@@ -941,8 +954,9 @@ async fn stream(
         let s = lock(&inner.settings).clone();
         let prefs = s.device(&fp.to_hex());
         let preset = prefs.preset.unwrap_or(s.preset);
-        // A per-tablet frame rate overrides the global limit.
-        (s.clone(), preset, prefs.scale_percent(), prefs.max_fps.unwrap_or(s.max_fps))
+        let (default_scale, default_fps) = preset.display_defaults(&display_req);
+        let fps = if preset == QualityPreset::Automatic { s.max_fps } else { default_fps };
+        (s.clone(), preset, prefs.resolution_scale.unwrap_or(default_scale), prefs.max_fps.unwrap_or(fps))
     };
     // The tablet reports its panel; the monitor is that panel at `scale`.
     let mut native = display_req;
@@ -1033,15 +1047,10 @@ async fn stream(
             Ok::<_, PlatformError>(p)
         })
     };
-    let mut pipeline: Box<dyn VideoPipeline> = start_pipeline(
-        display.clone(),
-        config.clone(),
-        controller.current(),
-        media.frame_sender(),
-        err_tx.clone(),
-    )
-    .await
-    .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
+    let mut pipeline: Box<dyn VideoPipeline> =
+        start_pipeline(display.clone(), config.clone(), controller.current(), media.frame_sender(), err_tx.clone())
+            .await
+            .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
 
     let shared_display = Arc::new(Mutex::new(display.clone()));
     let input_tx = spawn_input_thread(inner.platform.clone(), shared_display.clone());
@@ -1077,6 +1086,16 @@ async fn stream(
                     ClientMessage::Ping { nonce } => ch.send(&HostMessage::Pong { nonce }).await?,
                     ClientMessage::Pong { .. } => {}
                     ClientMessage::SetPreset { preset: p } => {
+                        if p != preset {
+                            change = apply_preset(inner, &fp, p, &native, &mut scale, &mut fps_cap);
+                        }
+                        {
+                            let mut settings = lock(&inner.settings);
+                            let mut prefs = settings.device(&fp.to_hex());
+                            prefs.preset = Some(p);
+                            settings.devices.insert(fp.to_hex(), prefs);
+                        }
+                        inner.save_settings();
                         preset = p;
                         if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
                             pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
@@ -1181,6 +1200,9 @@ async fn stream(
                 None => break Ok(false),
                 Some(SessionCommand::Disconnect { reconnect }) => break Ok(reconnect),
                 Some(SessionCommand::SetPreset(p)) => {
+                    if p != preset {
+                        change = apply_preset(inner, &fp, p, &native, &mut scale, &mut fps_cap);
+                    }
                     preset = p;
                     if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
                         pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
@@ -1291,6 +1313,28 @@ async fn stream(
     // display driver.
     let _ = tokio::task::spawn_blocking(move || drop(lease)).await;
     outcome.map(|_| ())
+}
+
+/// A newly chosen preset sets its resolution and frame rate (remembered
+/// for the tablet). Returns the display change to apply, if any.
+fn apply_preset(
+    inner: &HostInner,
+    fp: &Fingerprint,
+    preset: QualityPreset,
+    native: &DisplayRequest,
+    scale: &mut u32,
+    fps_cap: &mut u32,
+) -> Option<DisplayChange> {
+    let (s, f) = preset.display_defaults(native);
+    inner.remember_scale(fp, s);
+    inner.remember_fps(fp, f);
+    if (s, f) == (*scale, *fps_cap) {
+        return None;
+    }
+    tracing::info!(?preset, scale = s, fps = f, "preset applied");
+    *scale = s;
+    *fps_cap = f;
+    Some(DisplayChange::Plan)
 }
 
 /// The monitor for `native` at `scale`, refreshing at the stream's frame rate

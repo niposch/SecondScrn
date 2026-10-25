@@ -1672,7 +1672,7 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-android-client"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "android_log-sys",
  "glow",
@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-devtools"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "secondscrn-graphics",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-diagnostics"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "regex-lite",
  "serde",
@@ -1721,7 +1721,7 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-discovery"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "mdns-sd",
  "secondscrn-protocol",
@@ -1731,14 +1731,14 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-graphics"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "secondscrn-protocol",
 ]
 
 [[package]]
 name = "secondscrn-protocol"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-security"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "hex",
  "rand 0.8.8",
@@ -1769,7 +1769,7 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-session"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "rustls",
  "secondscrn-diagnostics",
@@ -1790,7 +1790,7 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-transport"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "if-addrs",
  "secondscrn-graphics",
@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "secondscrn-windows-host"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "secondscrn-devtools",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "uniffi",
 ]

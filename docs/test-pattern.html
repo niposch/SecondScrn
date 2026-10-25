@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SecondScrn display test pattern</title>
+<style>
+*{box-sizing:border-box}body{margin:24px;background:#17191d;color:#f5f5f5;font:16px system-ui,sans-serif}h1{font-size:28px}section{margin:24px 0}canvas{display:block;border:1px solid #888;max-width:100%}.bars{height:120px;display:flex}.bars span{flex:1}button{padding:8px 16px}p{max-width:80ch;line-height:1.5}.fine{font:12px monospace;color:#bbb}.swatches{display:flex}.swatches span{flex:1;height:70px;display:grid;place-items:center}
+</style>
+<h1>SecondScrn display test pattern</h1>
+<p>Open this file on the Windows tablet display. Set browser zoom to 100 %. For a one-device-pixel pattern, use Windows scaling at 100 % too. Compare native resolution with a scaled stream, with GSR on and off. This is a visual check, not a calibrated colour or latency measurement.</p>
+<button onclick="document.documentElement.requestFullscreen()">Full screen</button>
+<section><h2>Colour bars</h2><div class="bars" id="bars"></div><p class="fine">White · yellow · cyan · green · magenta · red · blue · black. Look for neutral white/grey and no obvious tint or washed-out blacks.</p></section>
+<section><h2>Near black and near white</h2><div class="swatches" id="levels"></div></section>
+<section><h2>Fine lines and text</h2><canvas id="lines" width="1000" height="180"></canvas><p>Black text: Il1 | O0 — Small text should remain readable.</p><p style="color:#f44">Red text and thin coloured lines may soften with 4:2:0 chroma.</p><p style="color:#69f">Blue text: Il1 | O0 — Compare against the physical monitor.</p></section>
+<section><h2>Motion and pacing</h2><canvas id="motion" width="1000" height="220"></canvas><p class="fine">The box moves at 600 CSS pixels/s; frame count follows browser requestAnimationFrame. Watch for jumps or freezes. Actual stream FPS comes from SecondScrn diagnostics.</p></section>
+<script>
+for(const color of ['white','yellow','cyan','lime','magenta','red','blue','black']){const e=document.createElement('span');e.style.background=color;document.querySelector('#bars').append(e)}
+for(const v of [0,4,8,16,32,128,223,239,247,251,255]){const e=document.createElement('span');e.style.background=`rgb(${v},${v},${v})`;e.style.color=v<128?'#fff':'#000';e.textContent=v;document.querySelector('#levels').append(e)}
+const c=document.querySelector('#lines').getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,1000,180);for(let x=0;x<1000;x++){c.fillStyle=x<333?'#000':x<666?'#f00':'#00f';if(x%2===0)c.fillRect(x,0,1,80)}for(let y=90;y<180;y+=2){c.fillStyle='#000';c.fillRect(0,y,1000,1)}
+const m=document.querySelector('#motion').getContext('2d');let start;let frames=0;function tick(t){start??=t;const s=(t-start)/1000;m.fillStyle='#202329';m.fillRect(0,0,1000,220);m.fillStyle='#3ba7ff';m.fillRect((s*600)%1000-100,75,100,100);m.fillStyle='white';m.font='20px monospace';m.fillText(`frame ${++frames} | ${s.toFixed(2)} s`,20,35);requestAnimationFrame(tick)}requestAnimationFrame(tick);
+</script></html>

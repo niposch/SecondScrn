@@ -65,7 +65,7 @@ pub enum Phase {
 pub enum Preset {
     Automatic,
     Sharp,
-    Balanced,
+    Smooth,
     LowBandwidth,
 }
 
@@ -213,7 +213,7 @@ fn preset_to(p: Preset) -> QualityPreset {
     match p {
         Preset::Automatic => QualityPreset::Automatic,
         Preset::Sharp => QualityPreset::Sharp,
-        Preset::Balanced => QualityPreset::Balanced,
+        Preset::Smooth => QualityPreset::Smooth,
         Preset::LowBandwidth => QualityPreset::LowBandwidth,
     }
 }
@@ -222,7 +222,7 @@ fn preset_from(p: QualityPreset) -> Preset {
     match p {
         QualityPreset::Automatic => Preset::Automatic,
         QualityPreset::Sharp => Preset::Sharp,
-        QualityPreset::Balanced => Preset::Balanced,
+        QualityPreset::Smooth => Preset::Smooth,
         QualityPreset::LowBandwidth => Preset::LowBandwidth,
     }
 }

@@ -46,8 +46,60 @@ const DECODE_QUEUE: usize = 60;
 fn slowdown_queue(fps: u32) -> usize {
     ((fps as usize).div_ceil(20)).max(3)
 }
+/// No performance warnings this long after the stream (re)starts.
+const WARNING_GRACE: Duration = Duration::from_secs(10);
 /// A performance warning stays this long after its cause was last seen.
 const WARNING_HOLD: Duration = Duration::from_secs(15);
+
+/// Only fresh, sustained evidence outside stream start-up can raise a warning.
+#[derive(Default)]
+struct WarningTracker {
+    started: Option<Instant>,
+    congested_reports: u32,
+    last_report: Option<Instant>,
+    behind: std::collections::VecDeque<Instant>,
+    warning: Option<(PerformanceWarning, Instant)>,
+}
+
+impl WarningTracker {
+    fn reset(&mut self, now: Instant) {
+        *self = Self { started: Some(now), ..Self::default() };
+    }
+
+    fn settled(&self, now: Instant) -> bool {
+        self.started.is_some_and(|t| now.duration_since(t) >= WARNING_GRACE)
+    }
+
+    fn network_report(&mut self, now: Instant, loss: Option<f32>, rtt_ms: Option<f32>) {
+        let bad = loss.is_some_and(|l| l > 0.05) || rtt_ms.is_some_and(|r| r > 150.0);
+        if bad && self.last_report.is_some_and(|t| now.duration_since(t) < PING_INTERVAL) {
+            return;
+        }
+        self.last_report = Some(now);
+        self.congested_reports = if bad && self.settled(now) { self.congested_reports.saturating_add(1) } else { 0 };
+        if self.congested_reports >= 3 {
+            self.warning = Some((PerformanceWarning::Network, now));
+        }
+    }
+
+    fn decoder_behind(&mut self, now: Instant) {
+        if !self.settled(now) {
+            return;
+        }
+        self.behind.retain(|t| now.duration_since(*t) <= Duration::from_secs(10));
+        self.behind.push_back(now);
+        if self.behind.len() >= 2 {
+            self.warning = Some((PerformanceWarning::Decoder, now));
+        }
+    }
+
+    fn current(&mut self, now: Instant) -> Option<PerformanceWarning> {
+        if self.warning.is_some_and(|(_, t)| now.duration_since(t) >= WARNING_HOLD) {
+            self.warning = None;
+        }
+        self.warning.map(|(w, _)| w)
+    }
+}
 /// A frame that waited this long for the decoder (with more behind it) is
 /// skipped along with the rest until the next keyframe: bounded latency.
 const MAX_DECODE_WAIT: Duration = Duration::from_millis(250);
@@ -803,9 +855,7 @@ async fn run_connection(
     let mut odd_frames = 0u64;
     let mut behind_seen = 0u64;
     let mut last_slowdown: Option<Instant> = None;
-    let mut warning: Option<(PerformanceWarning, Instant)> = None;
-    let mut was_congested = false;
-    let mut behind_events: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
+    let mut warnings = WarningTracker::default();
     let mut last_rtp: Option<u64> = None;
     // Render rate from frame deltas between (2 s apart) stats ticks.
     let mut last_render: (u64, Instant) = (0, Instant::now());
@@ -813,6 +863,7 @@ async fn run_connection(
     let mut metrics = ClientMetrics::default();
     let mut ping_sent: Option<(u64, Instant)> = None;
     let mut rtt_avg = secondscrn_diagnostics::Ewma::new(0.3);
+    let mut rtt_observed: Option<Instant> = None;
     // Raw (pre-retransmission) loss over few packets is noisy; smooth it.
     let mut loss_avg = secondscrn_diagnostics::Ewma::new(0.2);
 
@@ -833,10 +884,15 @@ async fn run_connection(
                         if let Some((_, t)) = ping_sent.take().filter(|(n, _)| *n == nonce) {
                             rtt_avg.add(t.elapsed().as_secs_f32() * 1000.0);
                             metrics.rtt_ms = Some(rtt_avg.get());
+                            rtt_observed = Some(Instant::now());
                         }
                     }
                     HostMessage::StreamChanged { stream: s } => {
                         tracing::info!(width = s.width, height = s.height, fps = s.max_fps, "stream reconfigured");
+                        warnings.reset(Instant::now());
+                        metrics.warning = None;
+                        lock(&inner.state).metrics.warning = None;
+                        behind_seen = worker.times_behind();
                         // New format or frame rate: the decoder is set up for
                         // both (the rate decides its low-latency mode).
                         if (s.codec, s.width, s.height, s.max_fps)
@@ -885,11 +941,23 @@ async fn run_connection(
                         }
                     }
                     TransportEvent::Connected { .. } => {
+                        warnings.reset(Instant::now());
+                        metrics.warning = None;
+                        lock(&inner.state).metrics.warning = None;
                         *streamed = true;
                         inner.set_phase(ClientPhase::Streaming);
                     }
-                    TransportEvent::Interrupted => inner.set_phase(ClientPhase::Interrupted),
+                    TransportEvent::Interrupted => {
+                        warnings = WarningTracker::default();
+                        metrics.warning = None;
+                        lock(&inner.state).metrics.warning = None;
+                        inner.set_phase(ClientPhase::Interrupted);
+                    }
                     TransportEvent::Resumed => {
+                        warnings.reset(Instant::now());
+                        metrics.warning = None;
+                        lock(&inner.state).metrics.warning = None;
+                        behind_seen = worker.times_behind();
                         media.request_keyframe();
                         inner.set_phase(ClientPhase::Streaming);
                     }
@@ -904,11 +972,18 @@ async fn run_connection(
                         last_bytes = Some((s.bytes_received, now));
                         if let Some(rtt) = s.rtt {
                             metrics.rtt_ms = Some(rtt.as_secs_f32() * 1000.0);
+                            rtt_observed = Some(now);
                         }
                         if let Some(l) = s.loss {
                             loss_avg.add(l);
                             metrics.loss = Some(loss_avg.get());
                         }
+                        // Count transport reports, never repeated readings of
+                        // an old metric on the control-channel timer.
+                        let fresh_rtt = metrics.rtt_ms.filter(|_| {
+                            rtt_observed.is_some_and(|t| now.duration_since(t) <= PING_INTERVAL * 2)
+                        });
+                        warnings.network_report(now, s.loss, fresh_rtt);
                     }
                     TransportEvent::Closed { reason } => break Err(SessionError::Transport(reason)),
                     TransportEvent::BitrateEstimate(_) | TransportEvent::KeyframeRequested => {}
@@ -924,6 +999,11 @@ async fn run_connection(
             Some(err) = worker_errors.recv() => {
                 tracing::warn!(error = %err, "decoder failed, restarting");
                 worker = DecodeWorker::spawn(inner.platform.clone(), stream.clone(), worker_err_tx.clone());
+                warnings.reset(Instant::now());
+                metrics.warning = None;
+                lock(&inner.state).metrics.warning = None;
+                inner.publish();
+                behind_seen = 0;
                 media.request_keyframe();
             }
             _ = ping.tick() => {
@@ -935,25 +1015,10 @@ async fn run_connection(
                 let now = Instant::now();
                 let behind = worker.times_behind();
                 if behind > behind_seen {
-                    behind_events.push_back(now);
+                    warnings.decoder_behind(now);
                     behind_seen = behind;
                 }
-                while behind_events.front().is_some_and(|t| t.elapsed() > Duration::from_secs(10)) {
-                    behind_events.pop_front();
-                }
-                if behind_events.len() >= 2 {
-                    warning = Some((PerformanceWarning::Decoder, now));
-                }
-                // Loss or queueing on two consecutive reports.
-                let congested = metrics.loss.is_some_and(|l| l > 0.03) || metrics.rtt_ms.is_some_and(|r| r > 120.0);
-                if congested && was_congested {
-                    warning = Some((PerformanceWarning::Network, now));
-                }
-                was_congested = congested;
-                if warning.is_some_and(|(_, at)| at.elapsed() > WARNING_HOLD) {
-                    warning = None;
-                }
-                metrics.warning = warning.map(|(w, _)| w);
+                metrics.warning = warnings.current(now);
                 if worker.take_keyframe_request() {
                     media.request_keyframe();
                     ch.send(&ClientMessage::RequestKeyframe).await?;
@@ -1152,5 +1217,43 @@ impl Drop for DecodeWorker {
     fn drop(&mut self) {
         // Closing the channel ends the thread, which drops the decoder.
         self.tx.take();
+    }
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    #[test]
+    fn warnings_require_sustained_evidence_after_grace() {
+        let start = Instant::now();
+        let at = |s| start + Duration::from_secs(s);
+        let mut w = WarningTracker::default();
+        w.reset(start);
+        for s in 0..10 {
+            w.network_report(at(s), Some(0.5), Some(300.0));
+            w.decoder_behind(at(s));
+            assert_eq!(w.current(at(s)), None);
+        }
+        // Healthy reports break the streak; a single spike is insufficient.
+        w.network_report(at(10), Some(0.1), None);
+        w.network_report(at(12), Some(0.0), Some(20.0));
+        w.network_report(at(14), Some(0.1), None);
+        w.network_report(at(16), Some(0.1), None);
+        assert_eq!(w.current(at(16)), None);
+        w.network_report(at(18), Some(0.1), None);
+        assert_eq!(w.current(at(18)), Some(PerformanceWarning::Network));
+        // Reading an old result never extends its lifetime.
+        assert_eq!(w.current(at(33)), None);
+        w.decoder_behind(at(34));
+        assert_eq!(w.current(at(34)), None);
+        w.decoder_behind(at(36));
+        assert_eq!(w.current(at(36)), Some(PerformanceWarning::Decoder));
+        // Reconfiguration and resume both use reset: clear all history.
+        w.reset(at(37));
+        assert_eq!(w.current(at(37)), None);
+        w.decoder_behind(at(38));
+        w.network_report(at(38), Some(0.5), None);
+        assert_eq!(w.current(at(48)), None);
     }
 }

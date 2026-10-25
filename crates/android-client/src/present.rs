@@ -48,7 +48,10 @@ type OnComplete = unsafe extern "C" fn(context: *mut c_void, stats: *mut ASurfac
 
 #[link(name = "android")]
 unsafe extern "C" {
-    fn ASurfaceControl_createFromWindow(parent: *mut c_void, debug_name: *const std::ffi::c_char) -> *mut ASurfaceControl;
+    fn ASurfaceControl_createFromWindow(
+        parent: *mut c_void,
+        debug_name: *const std::ffi::c_char,
+    ) -> *mut ASurfaceControl;
     fn ASurfaceControl_release(sc: *mut ASurfaceControl);
     fn ASurfaceTransaction_create() -> *mut ASurfaceTransaction;
     fn ASurfaceTransaction_delete(t: *mut ASurfaceTransaction);
@@ -175,7 +178,8 @@ impl Presenter {
                     {
                         let mut ready = w.0.lock().unwrap_or_else(|e| e.into_inner());
                         if !*ready {
-                            ready = w.1.wait_timeout(ready, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+                            ready =
+                                w.1.wait_timeout(ready, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
                         }
                         *ready = false;
                     }
@@ -199,9 +203,10 @@ impl Presenter {
                             buffer.as_ptr() as *mut c_void,
                             fence.map_or(-1, |f| f.into_raw_fd()),
                         );
-                        let src = crop.map_or(ARect { left: 0, top: 0, right: width as i32, bottom: height as i32 }, |c| {
-                            ARect { left: c.left, top: c.top, right: c.right, bottom: c.bottom }
-                        });
+                        let src =
+                            crop.map_or(ARect { left: 0, top: 0, right: width as i32, bottom: height as i32 }, |c| {
+                                ARect { left: c.left, top: c.top, right: c.right, bottom: c.bottom }
+                            });
                         let dst = ARect { left: 0, top: 0, right: out_w, bottom: out_h };
                         ASurfaceTransaction_setGeometry(t, sc, &src, &dst, 0);
                         ASurfaceTransaction_setBufferDataSpace(t, sc, ADATASPACE_BT709);

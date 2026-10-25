@@ -228,15 +228,28 @@ pub enum QualityPreset {
     /// High quality: about twice the bitrate ceiling and a high floor, at
     /// the cost of some latency (larger frames take longer to send).
     Sharp,
-    /// Default for mixed workloads.
-    Balanced,
-    /// Weak Wi-Fi: lower bitrate ceiling and frame rate.
+    /// Smooth motion: 75 % resolution at up to 120 fps.
+    #[serde(alias = "balanced")]
+    Smooth,
+    /// Weak Wi-Fi: lower resolution, bitrate ceiling and frame rate.
     LowBandwidth,
 }
 
 impl QualityPreset {
     pub const ALL: [QualityPreset; 4] =
-        [QualityPreset::Automatic, QualityPreset::Sharp, QualityPreset::Balanced, QualityPreset::LowBandwidth];
+        [QualityPreset::Automatic, QualityPreset::Sharp, QualityPreset::Smooth, QualityPreset::LowBandwidth];
+
+    /// Resolution (percent of the panel) and frame rate the preset sets
+    /// when chosen. Both can be changed afterwards.
+    pub fn display_defaults(self, panel: &DisplayRequest) -> (u32, u32) {
+        let rates = panel.frame_rate_options();
+        let fps = |want: u32| rates.iter().copied().filter(|r| *r <= want).max().unwrap_or(want.min(60));
+        match self {
+            QualityPreset::Automatic | QualityPreset::Sharp => (100, fps(60)),
+            QualityPreset::Smooth => (75, fps(120)),
+            QualityPreset::LowBandwidth => (67, fps(30)),
+        }
+    }
 }
 
 /// Parameters of the video stream the host decided on.
@@ -682,6 +695,24 @@ mod tests {
         assert_eq!(panel.frame_rate_options(), vec![30, 60, 90, 120]);
         let odd = DisplayRequest { refresh_hz: 165, ..panel };
         assert_eq!(odd.frame_rate_options(), vec![30, 60, 90, 120, 144, 165]);
+    }
+
+    #[test]
+    fn presets_set_sensible_resolution_and_frame_rate() {
+        let panel = DisplayRequest {
+            width: 3200,
+            height: 2136,
+            refresh_hz: 144,
+            dpi: 345,
+            orientation: Orientation::Landscape,
+        };
+        assert_eq!(QualityPreset::Automatic.display_defaults(&panel), (100, 60));
+        assert_eq!(QualityPreset::Smooth.display_defaults(&panel), (75, 120));
+        assert_eq!(QualityPreset::LowBandwidth.display_defaults(&panel), (67, 30));
+        let slow = DisplayRequest { refresh_hz: 60, ..panel };
+        assert_eq!(QualityPreset::Smooth.display_defaults(&slow), (75, 60));
+        // Settings saved with the old name still load.
+        assert_eq!(serde_json::from_str::<QualityPreset>(r#""balanced""#).unwrap(), QualityPreset::Smooth);
     }
 
     #[test]

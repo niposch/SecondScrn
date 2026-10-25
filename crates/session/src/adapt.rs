@@ -76,7 +76,8 @@ impl BitratePolicy {
             // (`Sharp`) goes about twice as far.
             QualityPreset::Sharp => (0.30, 0.35),
             QualityPreset::Automatic => (0.14, 0.15),
-            QualityPreset::Balanced => (0.10, 0.15),
+            // Higher frame rate: a little less per pixel and frame.
+            QualityPreset::Smooth => (0.10, 0.15),
             QualityPreset::LowBandwidth => (0.05, 0.10),
         };
         let codec_factor = match codec {
@@ -262,10 +263,10 @@ mod tests {
 
     #[test]
     fn policy_scales_with_resolution_preset_and_codec() {
-        let hd = BitratePolicy::for_stream(Codec::H265, 1920, 1080, 60, QualityPreset::Balanced, None);
-        let qhd = BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Balanced, None);
+        let hd = BitratePolicy::for_stream(Codec::H265, 1920, 1080, 60, QualityPreset::Smooth, None);
+        let qhd = BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Smooth, None);
         let sharp = BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Sharp, None);
-        let h264 = BitratePolicy::for_stream(Codec::H264, 2560, 1600, 60, QualityPreset::Balanced, None);
+        let h264 = BitratePolicy::for_stream(Codec::H264, 2560, 1600, 60, QualityPreset::Smooth, None);
         assert!(hd.ceiling < qhd.ceiling && qhd.ceiling < sharp.ceiling && qhd.ceiling < h264.ceiling);
         assert!(sharp.floor > qhd.floor);
         for p in [hd, qhd, sharp, h264] {

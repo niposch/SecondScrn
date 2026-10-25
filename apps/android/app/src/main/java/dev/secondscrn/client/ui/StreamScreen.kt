@@ -226,7 +226,7 @@ private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: 
                     Text(text, color = Color.White, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
                 }
             }
-            Text("Quality", style = MaterialTheme.typography.labelLarge)
+            Text("Preset", style = MaterialTheme.typography.labelLarge)
             PresetSelector(state.preset, repo::setPreset)
             Text("Resolution", style = MaterialTheme.typography.labelLarge)
             ResolutionSelector(state, repo)

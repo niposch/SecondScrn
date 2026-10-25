@@ -190,7 +190,7 @@ fun PresetSelector(current: Preset, onSelect: (Preset) -> Unit) {
     val options = listOf(
         Preset.AUTOMATIC to "Automatic",
         Preset.SHARP to "High quality",
-        Preset.BALANCED to "Balanced",
+        Preset.SMOOTH to "Smooth",
         Preset.LOW_BANDWIDTH to "Weak Wi-Fi",
     )
     SingleChoiceSegmentedButtonRow {
@@ -209,7 +209,7 @@ private fun SettingsCard(state: ClientState, repo: ClientRepository) {
     Card(Modifier.widthIn(max = 900.dp).fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Settings", style = MaterialTheme.typography.titleMedium)
-            Text("Streaming quality", style = MaterialTheme.typography.labelLarge)
+            Text("Preset", style = MaterialTheme.typography.labelLarge)
             PresetSelector(state.preset, repo::setPreset)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

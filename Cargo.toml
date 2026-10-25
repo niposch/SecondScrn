@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/protocol","crates/security","crates/transport","crates/diagnostics","crates/discovery","crates/session","crates/graphics","crates/windows-host","crates/devtools","crates/android-client","crates/uniffi-bindgen"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/niposch/SecondScrn"

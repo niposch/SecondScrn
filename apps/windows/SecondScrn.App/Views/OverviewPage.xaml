@@ -62,7 +62,7 @@
                 </Border>
                 <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource Card}">
                     <StackPanel Spacing="4">
-                        <TextBlock Text="Quality" Style="{StaticResource Caption}" />
+                        <TextBlock Text="Preset" Style="{StaticResource Caption}" />
                         <ComboBox ItemsSource="{x:Bind ViewModel.Presets}" SelectedIndex="{x:Bind ViewModel.PresetIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" />
                     </StackPanel>
                 </Border>

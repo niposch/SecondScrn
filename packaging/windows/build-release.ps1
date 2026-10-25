@@ -4,7 +4,7 @@
   Velopack installer/update packages.
 
 .EXAMPLE
-  ./packaging/windows/build-release.ps1 -Version 0.1.0
+  ./packaging/windows/build-release.ps1 -Version 0.0.1
   Output: releases/ (Setup.exe, full/delta .nupkg, RELEASES feed files)
 
 .NOTES
@@ -28,11 +28,16 @@ try {
 
     Write-Host "== WinUI app"
     $publish = Join-Path $root 'target\publish\win-x64'
-    if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
+    $publish = [IO.Path]::GetFullPath($publish)
+    $allowedPublishRoot = [IO.Path]::GetFullPath((Join-Path $root 'target\publish')) + [IO.Path]::DirectorySeparatorChar
+    if (-not $publish.StartsWith($allowedPublishRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Publish path is outside the workspace target/publish directory'
+    }
+    if (Test-Path -LiteralPath $publish) { Remove-Item -LiteralPath $publish -Recurse -Force }
     dotnet publish apps/windows/SecondScrn.App/SecondScrn.App.csproj -c Release -r win-x64 --self-contained `
         -p:Version=$Version -p:RustProfile=release -o $publish
     if ($LASTEXITCODE) { throw 'dotnet publish failed' }
-    foreach ($required in 'secondscrn_host.dll', 'SecondScrn.pri', 'SecondScrn.exe', 'Driver\setup-vdd.ps1') {
+    foreach ($required in 'secondscrn_host.dll', 'SecondScrn.pri', 'SecondScrn.exe', 'Driver\setup-vdd.ps1', 'THIRD_PARTY_NOTICES.md', 'Licenses\RUST-NOTICES.txt') {
         if (-not (Test-Path (Join-Path $publish $required))) { throw "$required missing from publish output" }
     }
 
