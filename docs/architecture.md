@@ -92,7 +92,13 @@ VDD monitor ─(DWM)─► WGC frame (BGRA texture)
 * Frames are produced only when the screen changes (WGC semantics), paced to
   the target fps; while the encoder is busy only the newest frame is kept.
 * After the screen settles, the last frame is re-encoded twice so static text
-  converges to full quality; a 1 fps keepalive frame follows.
+  converges to full quality; a 5 fps keepalive of repeated frames (~100 bytes
+  each) follows, which keeps the Wi-Fi link awake for the next change.
+* Keyframe requests within 500 ms of a keyframe are ignored (PLI, gap
+  detection and the control channel usually report the same loss).
+* UDP sockets use 8 MB buffers: a keyframe at tablet resolution leaves as one
+  burst of several hundred kilobytes, and the Windows default (64 KB) dropped
+  its tail locally.
 * Encoders are probed by configuring them (up to 3840×2160); encoders are bound
   to their GPU by PCI vendor ID. IddCx "shadow" adapters are ignored.
 * Colour: BT.709 primaries/transfer/matrix, limited range, signalled in the
@@ -102,9 +108,11 @@ VDD monitor ─(DWM)─► WGC frame (BGRA texture)
 
 ## Video path (Android)
 
-`TransportEvent::Frame` → bounded decode queue (3) → decode thread
-(`AMediaCodec` input) → render thread releases output buffers to the
-`SurfaceView`'s `ANativeWindow` immediately. The `SurfaceHolder` is sized to
+`TransportEvent::Frame` → decode queue → decode thread (`AMediaCodec`
+input) → render thread releases output buffers to the `SurfaceView`'s
+`ANativeWindow` immediately. Every received frame is decoded (dropping one
+breaks the reference chain and costs a keyframe); when a burst makes several
+pictures ready at once, only the newest is rendered. The `SurfaceHolder` is sized to
 the stream resolution so pixels map 1:1. Surface changes (rotation,
 background) bump a generation counter; the decoder is re-created and a
 keyframe requested. Frames never pass through Kotlin.

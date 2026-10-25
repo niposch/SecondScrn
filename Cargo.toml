@@ -10,6 +10,7 @@ repository = "https://github.com/niposch/SecondScrn"
 rust-version = "1.88"
 
 [workspace.dependencies]
+socket2 = "0.6"
 secondscrn-protocol = { path = "crates/protocol" }
 secondscrn-security = { path = "crates/security" }
 secondscrn-discovery = { path = "crates/discovery" }

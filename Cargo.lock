@@ -1734,6 +1734,7 @@ version = "0.1.0"
 dependencies = [
  "if-addrs",
  "secondscrn-protocol",
+ "socket2",
  "str0m",
  "thiserror 2.0.21",
  "tokio",

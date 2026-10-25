@@ -53,6 +53,25 @@ keyframe recovery after burst loss.
   disappears) the first time it is used; rotating and returning to the native
   size do not.
 
+### Stutter at full resolution and idle responsiveness (0.1, third pass)
+
+Video at 3200×2136 stuttered every few seconds while half resolution was
+smooth. Measured on the tablet: loss bursts of 5–17 %, a keyframe every ~3 s,
+the bitrate budget collapsing after each one, seconds at 0 fps. Causes, all
+local: Windows' 64 KB default UDP send buffer dropped the tail of every large
+frame; the tablet discarded frames when its 3-frame decode queue overflowed
+after a burst, and every discard requested another (large) keyframe. With
+8 MB socket buffers, decode-everything/render-newest and keyframe-request
+throttling, two minutes of full-resolution video ran at 0 % loss, 0
+retransmissions, 1 keyframe, 30 fps (video) to 55 fps (scrolling) at up to
+57 Mbit/s.
+
+Idle round trip with a 1 s keepalive: 61 ms median, 181 ms p90 (the link
+dozes); with 200 ms: 28 ms / 62 ms. The keepalive is now 200 ms.
+
+Touch no longer leaves the mouse cursor on the tablet display: its position is
+restored after each touch gesture unless the mouse was moved meanwhile.
+
 ## Not yet verified (hardware-dependent claims)
 
 * End-to-end latency, smoothness at 60 fps, battery, thermals, colour accuracy

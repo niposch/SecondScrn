@@ -77,7 +77,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 } else if let Some(sess) = &s.session {
                     let m = &sess.metrics;
                     line = format!(
-                        "{:?} {} {} {}x{} | enc {:.0} fps {:.1} ms | {:.1} Mbit/s (est {:.1}) rtt {} loss {} | client {:.0} fps",
+                        "{:?} {} {} {}x{} | enc {:.0} fps {:.1} ms | {:.1} Mbit/s (est {:.1}) rtt {} loss {} | client {:.0} fps | kf {} nack {} pli {} drop {}+{} late {} cdrop {}",
                         sess.phase,
                         sess.device_name,
                         sess.stream.as_ref().map(|c| c.codec.to_string()).unwrap_or_default(),
@@ -90,6 +90,13 @@ pub fn run(args: &[String]) -> Result<()> {
                         m.rtt_ms.map(|r| format!("{r:.0}ms")).unwrap_or("-".into()),
                         m.loss.map(|l| format!("{:.1}%", l * 100.0)).unwrap_or("-".into()),
                         m.client.map(|c| c.render_fps).unwrap_or(0.0),
+                        m.pipeline.keyframes,
+                        m.nacks,
+                        m.plis,
+                        m.frames_dropped_network,
+                        m.pipeline.frames_skipped,
+                        m.client.map(|c| c.late_frames).unwrap_or(0),
+                        m.client.map(|c| c.frames_dropped).unwrap_or(0),
                     );
                 } else if let Some(e) = &s.last_error {
                     line = format!("idle — last error: {e}");

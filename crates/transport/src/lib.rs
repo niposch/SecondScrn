@@ -374,6 +374,21 @@ fn rtc_codec(codec: Codec) -> RtcCodec {
     }
 }
 
+/// UDP socket buffer size. A keyframe at tablet resolution is several hundred
+/// kilobytes and leaves the PC as one burst; with the OS defaults (Windows:
+/// 64 KB send, Android: ~200 KB receive) the tail of every large frame was
+/// dropped locally, which looked like Wi-Fi loss and forced more keyframes.
+const SOCKET_BUFFER: usize = 8 << 20;
+
+fn enlarge_buffers(sock: &UdpSocket) {
+    let s = socket2::SockRef::from(sock);
+    let before = (s.send_buffer_size().unwrap_or(0), s.recv_buffer_size().unwrap_or(0));
+    let _ = s.set_send_buffer_size(SOCKET_BUFFER);
+    let _ = s.set_recv_buffer_size(SOCKET_BUFFER);
+    let after = (s.send_buffer_size().unwrap_or(0), s.recv_buffer_size().unwrap_or(0));
+    tracing::debug!(?before, ?after, "UDP socket buffers (send, receive)");
+}
+
 /// Binds one UDP socket per interface, all on the same port when possible so
 /// that a single port can be advertised to peers behind NAT (emulator).
 async fn bind_sockets(policy: &InterfacePolicy) -> Result<Vec<UdpSocket>, TransportError> {
@@ -398,6 +413,7 @@ async fn bind_sockets(policy: &InterfacePolicy) -> Result<Vec<UdpSocket>, Transp
         if port == 0 {
             port = sock.local_addr()?.port();
         }
+        enlarge_buffers(&sock);
         sockets.push(sock);
     }
     if sockets.is_empty() {
@@ -549,6 +565,7 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
         first_frame_time: None,
         impairer: None,
         last_seq: None,
+        send_drops: 0,
     };
     tokio::spawn(async move {
         let reason = driver.run(cmd_rx, frame_rx, net_rx).await;
@@ -580,6 +597,8 @@ struct Driver {
     impairer: Option<Impairer>,
     /// Highest RTP sequence number of an emitted frame (receiver).
     last_seq: Option<u64>,
+    /// Packets dropped because the socket's send buffer was full.
+    send_drops: u64,
 }
 
 impl Driver {
@@ -677,8 +696,16 @@ impl Driver {
         let Some(socket) = self.sockets.iter().position(|s| s.local_addr().ok() == Some(source)) else { return };
         match &mut self.impairer {
             None => {
-                // UDP send errors (e.g. no route) are transient; ICE handles failover.
-                let _ = self.sockets[socket].try_send_to(data, destination);
+                // UDP send errors (e.g. no route) are transient; ICE handles
+                // failover. A full send buffer drops the packet: count it.
+                if let Err(e) = self.sockets[socket].try_send_to(data, destination)
+                    && e.kind() == std::io::ErrorKind::WouldBlock
+                {
+                    self.send_drops += 1;
+                    if self.send_drops.is_power_of_two() {
+                        tracing::warn!(drops = self.send_drops, "UDP send buffer full, packets dropped");
+                    }
+                }
             }
             Some(imp) => {
                 let now = Instant::now();

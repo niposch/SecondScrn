@@ -27,9 +27,10 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Input::Pointer::*;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_FLAG_NONE, PEN_MASK_PRESSURE,
-    PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN, PT_TOUCH, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, TOUCH_MASK_CONTACTAREA, TOUCH_MASK_ORIENTATION, TOUCH_MASK_PRESSURE,
+    GetCursorPos, GetSystemMetrics, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_FLAG_NONE,
+    PEN_MASK_PRESSURE, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN, PT_TOUCH, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos, TOUCH_MASK_CONTACTAREA, TOUCH_MASK_ORIENTATION,
+    TOUCH_MASK_PRESSURE,
 };
 
 use crate::capture;
@@ -40,6 +41,21 @@ const MAX_CONTACTS: u32 = 10;
 /// Held contacts are released if the tablet goes silent this long (the
 /// network dropped mid-gesture). Long enough for press-and-hold.
 const STALE_CONTACTS: Duration = Duration::from_secs(10);
+/// After the last finger lifts, the mouse cursor goes back where it was
+/// after this delay (Windows moves it to the touch point asynchronously).
+const CURSOR_RESTORE_DELAY: Duration = Duration::from_millis(60);
+
+/// Where the mouse cursor was before a touch gesture on the tablet display.
+#[derive(Clone, Copy)]
+struct SavedCursor {
+    at: POINT,
+    /// The tablet monitor's rectangle in desktop pixels.
+    display: RECT,
+}
+
+fn inside(r: &RECT, p: POINT) -> bool {
+    p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom
+}
 
 fn mouse(dx: i32, dy: i32, data: i32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
     INPUT {
@@ -178,6 +194,10 @@ pub struct Injector {
     pen_mouse_down: bool,
     /// Rejected frames, for rate-limited logging.
     failures: u64,
+    /// Cursor position to restore when the current touch gesture ends.
+    cursor: Option<SavedCursor>,
+    /// A restore due at this time (gesture ended).
+    restore_at: Option<Instant>,
 }
 
 /// Half the side of the reported contact area, in pixels.
@@ -274,6 +294,9 @@ impl Injector {
     }
 
     fn inject_touch(&mut self, display_device: &str, frame: &[TouchContact]) -> Result<()> {
+        if self.contacts.is_empty() && frame.iter().any(|c| c.action == PointerAction::Down) {
+            self.remember_cursor(display_device);
+        }
         let mut infos = Vec::with_capacity(frame.len() + self.contacts.len());
         let mut lifted = Vec::new();
         for c in frame {
@@ -316,7 +339,41 @@ impl Injector {
             }
         }
         self.contacts.retain(|k| !lifted.contains(&k.id));
-        self.send_touch(&infos)
+        let r = self.send_touch(&infos);
+        if self.contacts.is_empty() && self.cursor.is_some() {
+            self.restore_at = Some(Instant::now() + CURSOR_RESTORE_DELAY);
+        }
+        r
+    }
+
+    /// Touch is for the tablet display only: Windows moves the mouse cursor
+    /// to every touch point (for apps that only understand mouse input), which
+    /// would pull it away from the user's work on the other monitors. Its
+    /// position is saved when a gesture starts and restored when it ends.
+    fn remember_cursor(&mut self, display_device: &str) {
+        self.restore_at = None;
+        if self.cursor.is_some() {
+            return; // a new gesture right after the last one (double tap)
+        }
+        let Some(m) = capture::monitor_by_device(display_device) else { return };
+        let mut at = POINT::default();
+        if unsafe { GetCursorPos(&mut at) }.is_ok() && !inside(&m.rect, at) {
+            self.cursor = Some(SavedCursor { at, display: m.rect });
+        }
+    }
+
+    fn restore_cursor_if_due(&mut self) {
+        if !self.contacts.is_empty() || self.restore_at.is_none_or(|t| Instant::now() < t) {
+            return;
+        }
+        self.restore_at = None;
+        let Some(saved) = self.cursor.take() else { return };
+        let mut now = POINT::default();
+        // Only if the cursor is still on the tablet display: if the user
+        // moved the mouse meanwhile, it stays where they put it.
+        if unsafe { GetCursorPos(&mut now) }.is_ok() && inside(&saved.display, now) {
+            let _ = unsafe { SetCursorPos(saved.at.x, saved.at.y) };
+        }
     }
 
     fn send_touch(&mut self, infos: &[POINTER_TYPE_INFO]) -> Result<()> {
@@ -430,6 +487,7 @@ impl Injector {
     /// No input for a moment: refresh held contacts as a real digitizer
     /// would, and release them if the tablet went silent.
     pub fn idle(&mut self) {
+        self.restore_cursor_if_due();
         let stale = self.last_event.is_none_or(|t| t.elapsed() > STALE_CONTACTS);
         if stale {
             self.release_all();
@@ -471,5 +529,9 @@ impl Injector {
         }
         self.mouse_contact = None;
         self.pen_mouse_down = false;
+        if self.cursor.is_some() {
+            self.restore_at = Some(Instant::now());
+            self.restore_cursor_if_due();
+        }
     }
 }

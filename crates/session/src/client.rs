@@ -32,9 +32,12 @@ use crate::snapshot::{ClientMetrics, ClientPhase, ClientSnapshot, DiscoveredHost
 /// How long the user has to type the PIN on the PC.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(130);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
-/// Frames queued for the decoder. Beyond this we drop and ask for a keyframe
-/// rather than build latency.
-const DECODE_QUEUE: usize = 3;
+/// Frames queued for the decoder. Frames arrive in bursts (e.g. after a
+/// retransmission) and dropping one breaks the reference chain, which costs a
+/// keyframe: at tablet resolution a burst large enough to cause the next
+/// loss. So every frame is decoded and only rendering skips stale pictures
+/// (see the platform decoder); this bound is only a safety net (~1 s).
+const DECODE_QUEUE: usize = 60;
 
 pub struct ClientConfig {
     pub data_dir: PathBuf,

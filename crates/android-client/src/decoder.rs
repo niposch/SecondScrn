@@ -125,6 +125,8 @@ struct Shared {
     codec: MediaCodec,
     running: AtomicBool,
     rendered: AtomicU64,
+    /// Decoded but not shown because a newer picture was ready.
+    skipped: AtomicU64,
     pending: Mutex<VecDeque<(i64, Instant)>>,
     decode_ms: Mutex<Ewma>,
 }
@@ -173,6 +175,7 @@ impl AndroidDecoder {
         if let Some(old) = self.active.take() {
             // Stops the old codec; keep its count so stats stay monotonic.
             self.stats.frames_rendered += old.shared.rendered.load(Ordering::Relaxed);
+            self.stats.frames_dropped += old.shared.skipped.load(Ordering::Relaxed);
         }
         let Some(window) = window else { return Ok(false) };
         let err = |what: &str, e: ndk::media_error::MediaError| {
@@ -194,6 +197,7 @@ impl AndroidDecoder {
             codec,
             running: AtomicBool::new(true),
             rendered: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
             pending: Mutex::new(VecDeque::new()),
             decode_ms: Mutex::new(Ewma::new(0.1)),
         });
@@ -210,9 +214,16 @@ impl AndroidDecoder {
 fn render_loop(s: &Shared) {
     while s.running.load(Ordering::Relaxed) {
         match s.codec.dequeue_output_buffer(Duration::from_millis(50)) {
-            Ok(DequeuedOutputBufferInfoResult::Buffer(buf)) => {
+            Ok(DequeuedOutputBufferInfoResult::Buffer(mut buf)) => {
+                // After a burst several pictures are ready at once: show only
+                // the newest (lowest latency), skip the others' rendering.
+                while let Ok(DequeuedOutputBufferInfoResult::Buffer(newer)) =
+                    s.codec.dequeue_output_buffer(Duration::ZERO)
+                {
+                    let _ = s.codec.release_output_buffer(std::mem::replace(&mut buf, newer), false);
+                    s.skipped.fetch_add(1, Ordering::Relaxed);
+                }
                 let pts = buf.info().presentation_time_us();
-                // Render immediately: lowest latency for an interactive display.
                 let _ = s.codec.release_output_buffer(buf, true);
                 s.rendered.fetch_add(1, Ordering::Relaxed);
                 let mut pending = s.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -293,6 +304,7 @@ impl VideoDecoder for AndroidDecoder {
         let mut s = self.stats;
         if let Some(a) = &self.active {
             s.frames_rendered += a.shared.rendered.load(Ordering::Relaxed);
+            s.frames_dropped += a.shared.skipped.load(Ordering::Relaxed);
             s.decode_ms_avg = a.shared.decode_ms.lock().unwrap_or_else(|e| e.into_inner()).get();
         }
         s

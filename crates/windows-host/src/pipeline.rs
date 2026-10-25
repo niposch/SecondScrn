@@ -9,7 +9,8 @@
 //!   `max_fps`. When the encoder is busy, only the newest frame is kept.
 //! * After the screen settles, the last frame is re-encoded twice so the
 //!   encoder can refine it (static text converges to full sharpness).
-//! * A keepalive frame every second keeps the decoder and statistics alive.
+//! * A keepalive frame every 200 ms keeps the decoder, statistics and the Wi-Fi
+//!   link awake.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -31,7 +32,15 @@ use crate::encoder::{Encoder, EncoderDescriptor, EncoderEvent, EncoderSettings};
 const RING: usize = 4;
 const REFRESH_DELAY: Duration = Duration::from_millis(120);
 const REFRESH_COUNT: u32 = 2;
-const KEEPALIVE: Duration = Duration::from_secs(1);
+/// Repeat frames while the screen is static. Frequent enough to keep the
+/// Wi-Fi link awake: with 1 s the tablet's idle round trip was 61 ms median
+/// (181 ms p90), with 200 ms 28 ms (62 ms p90), so the first frame after a
+/// sudden change arrives sooner. A repeated static frame is ~100 bytes.
+const KEEPALIVE: Duration = Duration::from_millis(200);
+/// Keyframe requests within this time after a keyframe are ignored: several
+/// receivers' signals (PLI, gap detection, control message) usually report
+/// the same loss, and each extra keyframe is a large burst.
+const KEYFRAME_MIN_INTERVAL: Duration = Duration::from_millis(500);
 
 enum Msg {
     Frame,
@@ -128,6 +137,7 @@ struct Worker {
     last_slot: Option<usize>,
     last_submit: Option<Instant>,
     last_capture: Option<Instant>,
+    last_keyframe: Option<Instant>,
     refreshes: u32,
     fps: u32,
     start: Instant,
@@ -188,6 +198,7 @@ impl Worker {
             last_slot: None,
             last_submit: None,
             last_capture: None,
+            last_keyframe: None,
             refreshes: REFRESH_COUNT,
             start: now,
             in_flight: VecDeque::new(),
@@ -213,7 +224,13 @@ impl Worker {
                     self.pending_capture = true;
                     self.capture_rate.tick(Instant::now());
                 }
-                Ok(Msg::Keyframe) => self.force_keyframe = true,
+                Ok(Msg::Keyframe) => {
+                    if self.last_keyframe.is_some_and(|t| t.elapsed() < KEYFRAME_MIN_INTERVAL) {
+                        tracing::trace!("keyframe request ignored, one was just sent");
+                    } else {
+                        self.force_keyframe = true;
+                    }
+                }
                 Ok(Msg::SetTarget(bps, fps)) => {
                     self.encoder.set_bitrate(bps);
                     self.fps = fps.clamp(1, self.config.max_fps.max(1));
@@ -297,6 +314,7 @@ impl Worker {
             self.in_flight.pop_front();
         }
         if key {
+            self.last_keyframe = Some(now);
             self.stats.lock().unwrap_or_else(|e| e.into_inner()).keyframes += 1;
         }
         Ok(())
