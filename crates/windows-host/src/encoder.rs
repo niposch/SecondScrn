@@ -478,7 +478,10 @@ pub fn probe() -> Vec<(CodecCapability, EncoderDescriptor)> {
                                 hardware: true,
                                 max_width: w,
                                 max_height: h,
-                                max_fps: 60,
+                                // Media Foundation offers no frame-rate limit
+                                // query; the session never asks for more than
+                                // the tablet's refresh rate.
+                                max_fps: 240,
                             },
                             desc.clone(),
                         ));

@@ -68,7 +68,13 @@ impl BitratePolicy {
     ) -> Self {
         let pixel_rate = width as f64 * height as f64 * fps.max(1) as f64;
         let (bpp, floor_ratio) = match preset {
-            QualityPreset::Sharp => (0.16, 0.35),
+            // Ceilings, not targets: the budget only grows this far while
+            // the network reports neither loss nor queueing delay. Larger
+            // frames also take longer to cross Wi-Fi, so a higher ceiling
+            // trades latency for picture quality; Automatic stays at a level
+            // measured to feel immediate on a real tablet, High quality
+            // (`Sharp`) goes about twice as far.
+            QualityPreset::Sharp => (0.30, 0.35),
             QualityPreset::Automatic => (0.14, 0.15),
             QualityPreset::Balanced => (0.10, 0.15),
             QualityPreset::LowBandwidth => (0.05, 0.10),

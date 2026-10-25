@@ -37,7 +37,7 @@
                                           SelectedIndex="{x:Bind PresetIndex}" SelectionChanged="OnPresetChanged">
                                     <x:String>Use global setting</x:String>
                                     <x:String>Automatic</x:String>
-                                    <x:String>Sharp text</x:String>
+                                    <x:String>High quality</x:String>
                                     <x:String>Balanced</x:String>
                                     <x:String>Weak Wi-Fi</x:String>
                                 </ComboBox>

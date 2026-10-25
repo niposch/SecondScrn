@@ -189,7 +189,7 @@ private fun HostCard(host: HostItem, state: ClientState, repo: ClientRepository)
 fun PresetSelector(current: Preset, onSelect: (Preset) -> Unit) {
     val options = listOf(
         Preset.AUTOMATIC to "Automatic",
-        Preset.SHARP to "Sharp text",
+        Preset.SHARP to "High quality",
         Preset.BALANCED to "Balanced",
         Preset.LOW_BANDWIDTH to "Weak Wi-Fi",
     )

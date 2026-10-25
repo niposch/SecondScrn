@@ -232,6 +232,10 @@ impl Worker {
                     }
                 }
                 Ok(Msg::SetTarget(bps, fps)) => {
+                    // The encoder spends `bitrate / configured fps` per frame.
+                    // Scaling that up when content changes less often (30 fps
+                    // video) was tried and made frames up to 4x larger, which
+                    // was visibly slower on Wi-Fi; frame size is kept bounded.
                     self.encoder.set_bitrate(bps);
                     self.fps = fps.clamp(1, self.config.max_fps.max(1));
                 }

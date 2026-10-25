@@ -225,7 +225,8 @@ pub enum QualityPreset {
     /// Follow the bandwidth estimate within the configured limits.
     #[default]
     Automatic,
-    /// Favour text sharpness: high bitrate floor, never reduce resolution.
+    /// High quality: about twice the bitrate ceiling and a high floor, at
+    /// the cost of some latency (larger frames take longer to send).
     Sharp,
     /// Default for mixed workloads.
     Balanced,

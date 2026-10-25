@@ -9,7 +9,7 @@
             <Border Style="{StaticResource Card}">
                 <StackPanel Spacing="12">
                     <ComboBox Header="Quality" ItemsSource="{x:Bind ViewModel.Presets}" SelectedIndex="{x:Bind ViewModel.PresetIndex, Mode=TwoWay}" MinWidth="260" />
-                    <TextBlock Style="{StaticResource Caption}" Text="Automatic follows the network. Sharp text keeps a high minimum bitrate for crisp text. Weak Wi-Fi limits bitrate and frame rate. When bandwidth is scarce, SecondScrn lowers the frame rate before it lowers per-frame quality; the resolution never changes during a session." />
+                    <TextBlock Style="{StaticResource Caption}" Text="Automatic follows the network. High quality allows about twice the bitrate for sharper text and video, at the cost of slightly higher latency. Weak Wi-Fi limits bitrate and frame rate. When bandwidth is scarce, SecondScrn lowers the frame rate before it lowers per-frame quality; the resolution never changes during a session." />
                 </StackPanel>
             </Border>
             <Border Style="{StaticResource Card}">

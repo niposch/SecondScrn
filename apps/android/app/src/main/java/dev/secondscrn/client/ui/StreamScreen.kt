@@ -163,8 +163,10 @@ private fun StatusBadge(state: ClientState) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: () -> Unit) {
+    // Translucent: the desktop stays visible behind the options.
     Surface(
         shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
         tonalElevation = 6.dp,
         modifier = Modifier.fillMaxWidth().safeDrawingPadding(),
     ) {

@@ -112,7 +112,9 @@ pub fn probe() -> Vec<CodecCapability> {
                     hardware: !is_software(&name),
                     max_width: w,
                     max_height: h,
-                    max_fps: 60,
+                    // The NDK has no performance query; the PC never sends
+                    // more than this panel's refresh rate.
+                    max_fps: 240,
                 });
                 break;
             }

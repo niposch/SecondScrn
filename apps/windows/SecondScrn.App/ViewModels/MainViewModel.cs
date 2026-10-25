@@ -139,7 +139,7 @@ public sealed partial class MainViewModel : ObservableObject
     public string[] Themes => ThemesData;
     public int[] FpsOptions => FpsData;
 
-    private static readonly string[] PresetsData = ["Automatic", "Sharp text", "Balanced", "Weak Wi-Fi"];
+    private static readonly string[] PresetsData = ["Automatic", "High quality", "Balanced", "Weak Wi-Fi"];
 
     public int PresetIndex
     {
