@@ -1033,10 +1033,15 @@ async fn stream(
             Ok::<_, PlatformError>(p)
         })
     };
-    let mut pipeline: Box<dyn VideoPipeline> =
-        start_pipeline(display.clone(), config.clone(), controller.current(), media.frame_sender(), err_tx.clone())
-            .await
-            .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
+    let mut pipeline: Box<dyn VideoPipeline> = start_pipeline(
+        display.clone(),
+        config.clone(),
+        controller.current(),
+        media.frame_sender(),
+        err_tx.clone(),
+    )
+    .await
+    .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
 
     let shared_display = Arc::new(Mutex::new(display.clone()));
     let input_tx = spawn_input_thread(inner.platform.clone(), shared_display.clone());
@@ -1052,6 +1057,7 @@ async fn stream(
     let mut restarts = 0u32;
     let mut metrics = HostMetrics::default();
     let mut last_bytes: Option<(u64, Instant)> = None;
+    let mut slowdown = Slowdown::default();
 
     // Ok(reconnect) = orderly end.
     let outcome: Result<bool, SessionError> = loop {
@@ -1073,7 +1079,7 @@ async fn stream(
                     ClientMessage::SetPreset { preset: p } => {
                         preset = p;
                         if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
-                            pipeline.set_target(t.bitrate_bps, t.fps);
+                            pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
                         }
                     }
                     ClientMessage::DisplayChanged { display: req } => {
@@ -1084,6 +1090,12 @@ async fn stream(
                         scale = settings::snap_scale(scale_percent);
                         inner.remember_scale(&fp, scale);
                         change = Some(DisplayChange::Plan);
+                    }
+                    ClientMessage::SlowDown => {
+                        let fps = slowdown.on_signal(controller.current().fps);
+                        tracing::debug!(fps, "tablet asked to slow down");
+                        let t = controller.current();
+                        pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
                     }
                     ClientMessage::SetUiScale { percent } => {
                         match lease.set_ui_scale(percent) {
@@ -1132,7 +1144,7 @@ async fn stream(
                         last_bytes = Some((s.bytes_sent, now));
                         if let Some(t) = controller.on_feedback(s.loss, s.rtt, metrics.send_rate_bps, now) {
                             tracing::debug!(?t, budget = controller.budget_bps(), congestion = ?controller.last_congestion(), "encoder target");
-                            pipeline.set_target(t.bitrate_bps, t.fps);
+                            pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
                         }
                         metrics.bitrate_estimate_bps = Some(controller.budget_bps());
                         metrics.bytes_sent = s.bytes_sent;
@@ -1160,7 +1172,7 @@ async fn stream(
                     tokio::time::sleep(Duration::from_millis(250 * restarts as u64)).await;
                     display = lease.info();
                     *lock(&shared_display) = display.clone();
-                    pipeline = start_pipeline(display.clone(), config.clone(), controller.current(), media.frame_sender(), err_tx.clone())
+                    pipeline = start_pipeline(display.clone(), config.clone(), slowdown.apply(controller.current()), media.frame_sender(), err_tx.clone())
                         .await
                         .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
                 }
@@ -1171,7 +1183,7 @@ async fn stream(
                 Some(SessionCommand::SetPreset(p)) => {
                     preset = p;
                     if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
-                        pipeline.set_target(t.bitrate_bps, t.fps);
+                        pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
                     }
                 }
                 Some(SessionCommand::SetResolution(p)) => {
@@ -1197,6 +1209,10 @@ async fn stream(
                 inner.update_session(id, |s| s.metrics = m);
                 if mode_changed(lease.as_ref(), &config) {
                     change = Some(DisplayChange::External);
+                }
+                if slowdown.recover() {
+                    let t = controller.current();
+                    pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
                 }
             }
         }
@@ -1250,7 +1266,7 @@ async fn stream(
             pipeline = start_pipeline(
                 display.clone(),
                 config.clone(),
-                controller.current(),
+                slowdown.apply(controller.current()),
                 media.frame_sender(),
                 err_tx.clone(),
             )
@@ -1288,9 +1304,85 @@ fn display_plan(native: &DisplayRequest, scale: u32, fps_cap: u32) -> DisplayPla
     plan
 }
 
+/// Temporary frame-rate limit while the tablet's decoder can't keep up. It
+/// asks to slow down as soon as frames queue up; frames are then skipped at
+/// the source (the encoder sends fewer), which keeps the picture moving. Not
+/// skipping meant a backlog, then a jump to the next keyframe: a freeze.
+#[derive(Default)]
+struct Slowdown {
+    cap: Option<f32>,
+    last_signal: Option<Instant>,
+}
+
+impl Slowdown {
+    const STEP_DOWN: f32 = 0.85;
+    const STEP_UP: f32 = 1.10;
+    const MIN_FPS: f32 = 30.0;
+    const QUIET: Duration = Duration::from_millis(1000);
+
+    /// The tablet is behind: lower the cap. Returns the new cap.
+    fn on_signal(&mut self, target: u32) -> u32 {
+        let now = Instant::now();
+        // One step per burst of signals (they arrive every ~100 ms).
+        if self.last_signal.is_none_or(|t| now.duration_since(t) > Duration::from_millis(300)) || self.cap.is_none() {
+            let base = self.cap.unwrap_or(target as f32);
+            self.cap = Some((base * Self::STEP_DOWN).max(Self::MIN_FPS));
+        }
+        self.last_signal = Some(now);
+        self.cap.map_or(target, |c| c as u32)
+    }
+
+    /// Raises the cap after a quiet period (called about every 2 s). True if
+    /// it changed.
+    fn recover(&mut self) -> bool {
+        let Some(cap) = self.cap else { return false };
+        if self.last_signal.is_some_and(|t| t.elapsed() < Self::QUIET) {
+            return false;
+        }
+        let up = cap * Self::STEP_UP;
+        self.cap = if up >= 240.0 { None } else { Some(up) };
+        true
+    }
+
+    fn limit(&self, fps: u32) -> u32 {
+        self.cap.map_or(fps, |c| fps.min(c.round() as u32).max(1))
+    }
+
+    fn apply(&self, t: crate::adapt::EncoderTarget) -> crate::adapt::EncoderTarget {
+        crate::adapt::EncoderTarget { fps: self.limit(t.fps), ..t }
+    }
+}
+
 /// True when the leased monitor no longer has the size being streamed (the
 /// user changed it in the Windows display settings).
 fn mode_changed(lease: &dyn DisplayLease, config: &StreamConfig) -> bool {
     let d = lease.info();
     (d.width, d.height) != (config.width, config.height)
+}
+
+#[cfg(test)]
+mod slowdown_tests {
+    use super::*;
+
+    #[test]
+    fn steps_down_once_per_burst_and_recovers_when_quiet() {
+        let mut s = Slowdown::default();
+        assert_eq!(s.limit(120), 120);
+        assert_eq!(s.on_signal(120), 102);
+        // Signals of the same burst don't compound.
+        assert_eq!(s.on_signal(120), 102);
+        assert_eq!(s.limit(120), 102);
+        assert_eq!(s.limit(60), 60, "never raises a lower target");
+        // Not quiet yet.
+        assert!(!s.recover());
+        s.last_signal = Some(Instant::now() - Duration::from_secs(2));
+        assert!(s.recover());
+        assert_eq!(s.limit(120), 112);
+        // Repeated bursts bottom out at 30 fps.
+        for _ in 0..20 {
+            s.last_signal = Some(Instant::now() - Duration::from_secs(1));
+            s.on_signal(120);
+        }
+        assert_eq!(s.limit(120), 30);
+    }
 }

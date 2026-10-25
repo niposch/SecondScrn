@@ -167,6 +167,18 @@ pub struct ClientMetrics {
     pub rtt_ms: Option<f32>,
     pub loss: Option<f32>,
     pub health: LinkHealth,
+    /// Something can't keep up with the current settings.
+    pub warning: Option<PerformanceWarning>,
+}
+
+/// Why the stream isn't smooth, for a hint in the tablet's options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PerformanceWarning {
+    /// The tablet's decoder falls behind at this resolution and frame rate.
+    Decoder,
+    /// Packets are lost or delayed: the network can't carry the stream.
+    Network,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

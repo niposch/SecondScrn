@@ -27,7 +27,9 @@ use crate::backoff::Backoff;
 use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STEP_TIMEOUT};
 use crate::platform::{ClientPlatform, DecodeOutcome, DecoderStats, PlatformError, UiScale};
 use crate::settings::{self, ClientSettings, KnownHost};
-use crate::snapshot::{ClientMetrics, ClientPhase, ClientSnapshot, DiscoveredHost, HostSummary, LinkHealth};
+use crate::snapshot::{
+    ClientMetrics, ClientPhase, ClientSnapshot, DiscoveredHost, HostSummary, LinkHealth, PerformanceWarning,
+};
 
 /// How long the user has to type the PIN on the PC.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(130);
@@ -38,6 +40,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 /// loss. So every frame is decoded and only rendering skips stale pictures
 /// (see the platform decoder); this bound is only a safety net (~1 s).
 const DECODE_QUEUE: usize = 60;
+/// Frames waiting for the decoder at which the PC is asked to slow down.
+const SLOWDOWN_QUEUE: usize = 3;
+/// A performance warning stays this long after its cause was last seen.
+const WARNING_HOLD: Duration = Duration::from_secs(15);
 /// A frame that waited this long for the decoder (with more behind it) is
 /// skipped along with the rest until the next keyframe: bounded latency.
 const MAX_DECODE_WAIT: Duration = Duration::from_millis(250);
@@ -792,6 +798,9 @@ async fn run_connection(
     let mut late_frames = 0u64;
     let mut odd_frames = 0u64;
     let mut behind_seen = 0u64;
+    let mut last_slowdown: Option<Instant> = None;
+    let mut warning: Option<(PerformanceWarning, Instant)> = None;
+    let mut was_congested = false;
     let mut behind_events: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
     let mut last_rtp: Option<u64> = None;
     // Render rate from frame deltas between (2 s apart) stats ticks.
@@ -862,6 +871,14 @@ async fn run_connection(
                             late_frames += 1;
                             media.request_keyframe();
                         }
+                        // Frames are queuing up: ask the PC to send fewer
+                        // before a backlog forces a resync (a freeze).
+                        if worker.queued() >= SLOWDOWN_QUEUE
+                            && last_slowdown.is_none_or(|t: Instant| t.elapsed() > Duration::from_millis(100))
+                        {
+                            last_slowdown = Some(Instant::now());
+                            ch.send(&ClientMessage::SlowDown).await?;
+                        }
                     }
                     TransportEvent::Connected { .. } => {
                         *streamed = true;
@@ -909,31 +926,30 @@ async fn run_connection(
                 if last_rx.elapsed() > PEER_TIMEOUT {
                     break Err(SessionError::Timeout("the PC stopped responding"));
                 }
-                // The decoder can't keep up with this frame rate (e.g. 144 fps
-                // at native resolution): step down one frame rate rather than
-                // stutter through repeated resyncs.
+                // Something can't keep up: warn (with a recommendation in the
+                // UI) instead of changing the user's settings.
+                let now = Instant::now();
                 let behind = worker.times_behind();
                 if behind > behind_seen {
-                    behind_events.push_back(Instant::now());
+                    behind_events.push_back(now);
                     behind_seen = behind;
                 }
                 while behind_events.front().is_some_and(|t| t.elapsed() > Duration::from_secs(10)) {
                     behind_events.pop_front();
                 }
                 if behind_events.len() >= 2 {
-                    behind_events.clear();
-                    let display = *lock(&inner.display);
-                    let lower = display
-                        .map(|d| d.frame_rate_options())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|r| *r >= 60 && *r < stream.max_fps)
-                        .max();
-                    if let Some(fps) = lower {
-                        tracing::warn!(from = stream.max_fps, to = fps, "decoder can't keep up, lowering the frame rate");
-                        ch.send(&ClientMessage::SetFrameRate { fps }).await?;
-                    }
+                    warning = Some((PerformanceWarning::Decoder, now));
                 }
+                // Loss or queueing on two consecutive reports.
+                let congested = metrics.loss.is_some_and(|l| l > 0.03) || metrics.rtt_ms.is_some_and(|r| r > 120.0);
+                if congested && was_congested {
+                    warning = Some((PerformanceWarning::Network, now));
+                }
+                was_congested = congested;
+                if warning.is_some_and(|(_, at)| at.elapsed() > WARNING_HOLD) {
+                    warning = None;
+                }
+                metrics.warning = warning.map(|(w, _)| w);
                 if worker.take_keyframe_request() {
                     media.request_keyframe();
                     ch.send(&ClientMessage::RequestKeyframe).await?;
@@ -1105,6 +1121,10 @@ impl DecodeWorker {
         if let Some(tx) = &self.tx {
             let _ = tx.send(WorkerMsg::Reconfigure(config));
         }
+    }
+
+    fn queued(&self) -> usize {
+        self.queued.load(Ordering::Relaxed)
     }
 
     fn times_behind(&self) -> u64 {

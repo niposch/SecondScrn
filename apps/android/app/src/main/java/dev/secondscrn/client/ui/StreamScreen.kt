@@ -139,7 +139,8 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
             ) {
                 Box(
                     Modifier.padding(top = 6.dp).size(width = 48.dp, height = 5.dp)
-                        .background(Color(0x99FFFFFF), RoundedCornerShape(3.dp))
+                        // Orange while something can't keep up (details in the options).
+                        .background(if (state.metrics.warning != null) Warning else Color(0x99FFFFFF), RoundedCornerShape(3.dp))
                         .border(0.5.dp, Color(0x66000000), RoundedCornerShape(3.dp)),
                 )
             }
@@ -197,6 +198,9 @@ private fun StatusBadge(state: ClientState) {
     }
 }
 
+/** Amber: something can't keep up with the current settings. */
+private val Warning = Color(0xFFD97706)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: () -> Unit) {
@@ -215,6 +219,11 @@ private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: 
                 }
                 OutlinedButton(onClick = onClose) { Text("Hide") }
                 Button(onClick = repo::disconnect) { Text("Disconnect") }
+            }
+            state.metrics.warning?.let { text ->
+                Surface(shape = RoundedCornerShape(12.dp), color = Warning) {
+                    Text(text, color = Color.White, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
+                }
             }
             Text("Quality", style = MaterialTheme.typography.labelLarge)
             PresetSelector(state.preset, repo::setPreset)

@@ -174,6 +174,9 @@ pub struct Metrics {
     pub loss_percent: Option<f32>,
     pub frames_dropped: u64,
     pub health: Health,
+    /// Shown in orange in the session options: what can't keep up and what
+    /// to change.
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -304,6 +307,7 @@ pub fn to_ffi(s: &ClientSnapshot) -> ClientState {
             loss_percent: m.loss.map(|l| l * 100.0),
             frames_dropped: m.frames_dropped,
             health: health(m.health),
+            warning: m.warning.map(|w| warning_text(w, s.stream.as_ref())),
         },
         hosts,
         decoders: s
@@ -350,6 +354,20 @@ fn pointer_action(kind: PointerKind) -> PointerAction {
         PointerKind::Move => PointerAction::Move,
         PointerKind::Up => PointerAction::Up,
         PointerKind::Cancel => PointerAction::Cancel,
+    }
+}
+
+fn warning_text(
+    w: secondscrn_session::snapshot::PerformanceWarning,
+    stream: Option<&secondscrn_protocol::StreamConfig>,
+) -> String {
+    use secondscrn_session::snapshot::PerformanceWarning as W;
+    let what = stream.map(|s| format!("{}×{} at {} fps", s.width, s.height, s.max_fps)).unwrap_or_default();
+    match w {
+        W::Decoder => format!("This tablet can't keep up with {what}. Choose a lower frame rate or resolution."),
+        W::Network => "The network can't keep up (packet loss or delay). Choose a lower resolution or frame rate, \
+             or the Weak Wi-Fi quality."
+            .to_string(),
     }
 }
 

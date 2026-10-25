@@ -460,6 +460,9 @@ pub enum ClientMessage {
     SetFrameRate {
         fps: u32,
     },
+    /// The tablet's decoder is falling behind: send fewer frames for a
+    /// while (skipped at the source, so the picture never freezes).
+    SlowDown,
     /// Windows scale factor ("Scale" in display settings) of the tablet's
     /// monitor, in percent.
     SetUiScale {
