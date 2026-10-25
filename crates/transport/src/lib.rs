@@ -768,10 +768,7 @@ impl Driver {
                 let remote = None;
                 self.emit(TransportEvent::Connected { remote }).await;
             }
-            Event::IceConnectionStateChange(state) => match {
-                tracing::debug!(?state, "ice state");
-                state
-            } {
+            Event::IceConnectionStateChange(state) => match state {
                 IceConnectionState::Disconnected if self.disconnected_since.is_none() => {
                     self.disconnected_since = Some(Instant::now());
                     self.emit(TransportEvent::Interrupted).await;

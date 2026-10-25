@@ -109,15 +109,31 @@ keyframe requested. Frames never pass through Kotlin.
 
 ## Adaptation
 
-str0m's GCC estimate is mapped onto encoder bitrate and frame rate:
+Media is sent **without str0m's GCC estimator/pacer**; an RTCP-feedback
+controller in `session::adapt` sets the encoder target instead:
 
-* Ceiling/floor derive from pixel rate × bits-per-pixel per preset and codec.
-* Decreases only on congestion evidence (sending near the target, or loss
-  > 2 %). An idle desktop produces an *application-limited* estimate that
-  tracks the tiny send rate; reacting to it would make the next scroll blurry.
+* Ceiling/floor derive from pixel rate × bits-per-pixel per preset and codec;
+  the session starts at half the ceiling (≤ 25 Mbit/s).
+* Once per second: loss (receiver reports) > 2 % or queueing delay (median of
+  the last 3 RTTs above the 10 s minimum) > 40 ms cuts the budget by 10 %;
+  > 5 % / > 100 ms cuts it by 30 %. Two clean seconds later it grows 15 %/s.
+* Delay is ignored while the link is application-limited (< 25 % of the
+  budget in use): radios doze between sparse idle packets and RTT jumps
+  without any queueing. Loss always counts.
 * When even the floor doesn't fit, fps drops (to ≥ 15) before per-frame
   quality; resolution never changes during a session.
-* Increases are rate-limited (2 s) and need a ≥ 10 % change.
+
+Why not GCC: str0m paces at 1.1 × the GCC estimate. A desktop is idle most of
+the time, so the estimate follows the idle send rate (~1 Mbit/s) and every
+large frame after a pause then sat in the pacer for seconds. Measured on a
+real tablet: 4–6 fps and ~1 Mbit/s before, 56–57 fps after removing the pacer.
+
+Receive side: a 2048-packet reordering window (keyframes at tablet resolution
+span hundreds of packets) and a 250 ms hole timeout. RTP sequence gaps mark
+frames non-contiguous; the receiver requests a keyframe and the decoder holds
+the last good picture until it arrives. The Windows host requests 1 ms timer
+resolution (the default 15.6 ms capped frame pacing near 32 fps); the tablet
+holds a low-latency Wi-Fi lock while streaming.
 
 ## Threads and FFI
 
@@ -139,6 +155,7 @@ str0m's GCC estimate is mapped onto encoder bitrate and frame rate:
 | Android decoding | MediaCodec | MediaCodec via the **NDK from Rust** (`ndk` crate) | As preferred; GStreamer on Android was evaluated and rejected (deployment size/complexity, no benefit with str0m). |
 | Windows bindings | C ABI + generated P/Invoke | **UniFFI + uniffi-bindgen-cs** | One binding technology for both platforms; generated records, enums, errors and callbacks. |
 | Android bindings | UniFFI | UniFFI (+1 JNI function) | As preferred. |
+| Congestion control | WebRTC's (GCC/TWCC) | **RTCP-feedback AIMD**, NACK/RTX and PLI from str0m | str0m's GCC-coupled pacer adds seconds of latency for bursty desktop content (measured); loss and RTT still come from standard RTCP. |
 | Virtual monitor removal | — | CCD path attach/detach | VDD keeps ≥1 monitor even with count 0; detaching the path from the desktop works without elevation. |
 
 ## Diagnostics
