@@ -15,6 +15,8 @@ mod jni_surface;
 mod logging;
 pub mod platform;
 #[cfg(target_os = "android")]
+mod present;
+#[cfg(target_os = "android")]
 mod upscale;
 
 /// Snapdragon GSR can run on this device (Adreno GPU, OpenGL ES 3.1).

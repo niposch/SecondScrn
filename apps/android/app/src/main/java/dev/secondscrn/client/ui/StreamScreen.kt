@@ -118,10 +118,11 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
             // Decode at exactly the stream resolution; the compositor maps it
             // 1:1 when the PC honoured the tablet's size.
             update = {
-                // Upscaling renders at the view's (panel) size; otherwise
-                // decode at exactly the stream size and let the compositor
-                // scale.
-                if (upscaling(state)) it.holder.setSizeFromLayout()
+                // Android 10+: the decoder never draws into this surface
+                // itself; the zero-copy presenter (or the upscaler) places the
+                // picture at the view's size. Older: decode at exactly the
+                // stream size and let the compositor scale.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q || upscaling(state)) it.holder.setSizeFromLayout()
                 else it.holder.setFixedSize(stream.width.toInt(), stream.height.toInt())
                 requestFrameRate(it.holder, stream.maxFps.toInt())
             },

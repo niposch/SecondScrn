@@ -161,14 +161,18 @@ struct Active {
     /// Present when the decoder renders into the upscaler instead of the
     /// window. Dropped after the codec has stopped.
     upscaler: Option<crate::upscale::Upscaler>,
+    /// Present when pictures go to the screen through the zero-copy
+    /// presenter instead of straight into the window.
+    presenter: Option<crate::present::Presenter>,
 }
 
 impl Active {
     /// Pictures shown: by the upscaler if it is in use, else by the codec.
     fn rendered(&self) -> u64 {
-        match &self.upscaler {
-            Some(u) => u.presented.load(Ordering::Relaxed),
-            None => self.shared.rendered.load(Ordering::Relaxed),
+        match (&self.upscaler, &self.presenter) {
+            (Some(u), _) => u.presented.load(Ordering::Relaxed),
+            (None, Some(p)) => p.presented.load(Ordering::Relaxed),
+            (None, None) => self.shared.rendered.load(Ordering::Relaxed),
         }
     }
 }
@@ -259,6 +263,16 @@ impl AndroidDecoder {
                 Err(e) => tracing::warn!(error = %e, "super resolution failed; the compositor scales instead"),
             }
         }
+        let mut presenter = None;
+        if upscaler.is_none() && crate::present::supported() {
+            match crate::present::Presenter::start(window.clone(), w, h) {
+                Ok((p, reader_window)) => {
+                    presenter = Some(p);
+                    output_window = reader_window;
+                }
+                Err(e) => tracing::warn!(error = %e, "zero-copy presentation failed; decoding into the window"),
+            }
+        }
         codec
             .configure(&format, Some(&output_window), MediaCodecDirection::Decoder)
             .map_err(|e| err("configure", e))?;
@@ -284,7 +298,7 @@ impl AndroidDecoder {
             .name("secondscrn-render".into())
             .spawn(move || render_loop(&s))
             .map_err(|e| PlatformError::new(PlatformErrorKind::Decoder, e.to_string()))?;
-        self.active = Some(Active { shared, output: Some(output), generation, upscaler });
+        self.active = Some(Active { shared, output: Some(output), generation, upscaler, presenter });
         Ok(true)
     }
 }

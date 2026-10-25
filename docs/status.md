@@ -133,6 +133,33 @@ Measured with a fast animation on the tablet's monitor (release host):
   resolution (its software crypto and packetizing overflowed the send
   queue); measurements above use the release build, as shipped.
 
+### Native 120 fps: what limits it (0.1, sixth pass)
+
+Experiments at 3200×2136, 120 fps on the test tablet (Snapdragon, Adreno
+735, 120/144 Hz panel):
+
+| Path | Pictures/s |
+|---|---|
+| Decoder into the window (HEVC / H.264) | 73 / 82 |
+| Decoding without displaying anything (H.264) | 116 |
+| GL path (copy pass at native size) | 51 |
+| Zero-copy `ASurfaceControl` presenter, with backpressure | 85–90 |
+
+The decoder alone keeps up; displaying full-resolution pictures costs the
+throughput (with either codec, direct or zero-copy). About 90 fps is what
+this tablet sustains at native resolution; 120+ needs a lower resolution.
+
+* **No freezes when behind:** the tablet asks the PC to slow down as soon as
+  ~50 ms of frames queue up; frames are skipped at the source (the picture
+  keeps moving) instead of a backlog that ended in a jump to the next
+  keyframe (100+ ms freezes).
+* **Warning instead of automatic switching:** an orange note in the
+  session options (and an orange handle) recommends a lower frame rate or
+  resolution when the decoder or the network can't keep up.
+* **Zero-copy presentation** (Android 10+): the decoder renders into an
+  image queue and never waits for the compositor; the newest picture's
+  buffer is handed to a child surface layer without a GPU copy.
+
 ## Not yet verified (hardware-dependent claims)
 
 * End-to-end latency, smoothness at 60 fps, battery, thermals, colour accuracy

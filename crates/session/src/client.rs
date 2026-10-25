@@ -40,8 +40,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 /// loss. So every frame is decoded and only rendering skips stale pictures
 /// (see the platform decoder); this bound is only a safety net (~1 s).
 const DECODE_QUEUE: usize = 60;
-/// Frames waiting for the decoder at which the PC is asked to slow down.
-const SLOWDOWN_QUEUE: usize = 3;
+/// Frames waiting for the decoder at which the PC is asked to slow down:
+/// about 50 ms worth (Wi-Fi delivers a few frames at once now and then;
+/// that alone must not count), at least 3.
+fn slowdown_queue(fps: u32) -> usize {
+    ((fps as usize).div_ceil(20)).max(3)
+}
 /// A performance warning stays this long after its cause was last seen.
 const WARNING_HOLD: Duration = Duration::from_secs(15);
 /// A frame that waited this long for the decoder (with more behind it) is
@@ -873,7 +877,7 @@ async fn run_connection(
                         }
                         // Frames are queuing up: ask the PC to send fewer
                         // before a backlog forces a resync (a freeze).
-                        if worker.queued() >= SLOWDOWN_QUEUE
+                        if worker.queued() >= slowdown_queue(stream.max_fps)
                             && last_slowdown.is_none_or(|t: Instant| t.elapsed() > Duration::from_millis(100))
                         {
                             last_slowdown = Some(Instant::now());
