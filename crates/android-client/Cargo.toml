@@ -24,5 +24,6 @@ uniffi.workspace = true
 [target.'cfg(target_os = "android")'.dependencies]
 ndk = { version = "0.9", features = ["media", "api-level-30"] }
 ndk-sys = "0.6"
+libc = "0.2"
 jni = "0.21"
 android_log-sys = "0.3"

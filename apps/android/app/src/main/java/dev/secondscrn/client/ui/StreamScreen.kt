@@ -1,5 +1,7 @@
 package dev.secondscrn.client.ui
 
+import android.os.Build
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
@@ -58,6 +60,7 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
     var hint by rememberSaveable { mutableStateOf(true) }
     val touchEnabled by rememberUpdatedState(state.touchInput)
     val asMouse by rememberUpdatedState(state.touchAsMouse)
+    val maxFps by rememberUpdatedState(stream.maxFps.toInt())
     BackHandler { overlay = !overlay }
     LaunchedEffect(Unit) {
         delay(4000)
@@ -74,6 +77,7 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
                         override fun surfaceCreated(h: SurfaceHolder) {}
                         override fun surfaceChanged(h: SurfaceHolder, format: Int, w: Int, hh: Int) {
                             NativeSurface.setSurface(h.surface)
+                            requestFrameRate(h, maxFps)
                             repo.requestKeyframe()
                         }
                         override fun surfaceDestroyed(h: SurfaceHolder) = NativeSurface.setSurface(null)
@@ -106,7 +110,10 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
             },
             // Decode at exactly the stream resolution; the compositor maps it
             // 1:1 when the PC honoured the tablet's size.
-            update = { it.holder.setFixedSize(stream.width.toInt(), stream.height.toInt()) },
+            update = {
+                it.holder.setFixedSize(stream.width.toInt(), stream.height.toInt())
+                requestFrameRate(it.holder, stream.maxFps.toInt())
+            },
         )
 
         StatusBadge(state)
@@ -143,6 +150,17 @@ fun StreamScreen(state: ClientState, repo: ClientRepository) {
     }
 
     DisposableEffect(Unit) { onDispose { NativeSurface.setSurface(null) } }
+}
+
+/**
+ * Asks the display to run at the stream's frame rate. Without it Android keeps
+ * many tablets at 60 Hz for apps, whatever the PC sends.
+ */
+private fun requestFrameRate(holder: SurfaceHolder, fps: Int) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+    val surface = holder.surface ?: return
+    if (!surface.isValid) return
+    runCatching { surface.setFrameRate(fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE) }
 }
 
 @Composable

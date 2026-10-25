@@ -3,7 +3,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 /// loss. So every frame is decoded and only rendering skips stale pictures
 /// (see the platform decoder); this bound is only a safety net (~1 s).
 const DECODE_QUEUE: usize = 60;
+/// A frame that waited this long for the decoder (with more behind it) is
+/// skipped along with the rest until the next keyframe: bounded latency.
+const MAX_DECODE_WAIT: Duration = Duration::from_millis(250);
 
 pub struct ClientConfig {
     pub data_dir: PathBuf,
@@ -885,6 +888,7 @@ async fn run_connection(
                     decode_time_ms_avg: ds.decode_ms_avg,
                     render_fps: metrics.render_fps,
                     late_frames,
+                    decode_queue_max: worker.take_queue_max(),
                 }}).await?;
                 lock(&inner.state).metrics = metrics.clone();
                 inner.publish();
@@ -903,6 +907,9 @@ enum WorkerMsg {
 /// Runs the platform decoder on a dedicated thread.
 struct DecodeWorker {
     tx: Option<std::sync::mpsc::SyncSender<WorkerMsg>>,
+    /// Frames waiting for the decoder, and the most since the last report.
+    queued: Arc<AtomicUsize>,
+    queued_max: Arc<AtomicUsize>,
     need_keyframe: Arc<AtomicBool>,
     stats: Arc<Mutex<DecoderStats>>,
 }
@@ -917,6 +924,8 @@ impl DecodeWorker {
         let need_keyframe = Arc::new(AtomicBool::new(true));
         let stats = Arc::new(Mutex::new(DecoderStats::default()));
         let (nk, st) = (need_keyframe.clone(), stats.clone());
+        let queued = Arc::new(AtomicUsize::new(0));
+        let q = queued.clone();
         std::thread::Builder::new()
             .name("secondscrn-decode".into())
             .spawn(move || {
@@ -945,6 +954,21 @@ impl DecodeWorker {
                             nk.store(true, Ordering::Relaxed);
                         }
                         WorkerMsg::Frame(f) => {
+                            let behind = q.fetch_sub(1, Ordering::Relaxed) - 1;
+                            // Never let latency build up: if frames waited too
+                            // long, skip to the next keyframe instead.
+                            if behind > 0 && !f.keyframe && f.arrival.elapsed() > MAX_DECODE_WAIT {
+                                if !waiting_for_key {
+                                    tracing::warn!(
+                                        behind,
+                                        waited_ms = f.arrival.elapsed().as_millis() as u64,
+                                        "decoder fell behind, resyncing"
+                                    );
+                                }
+                                waiting_for_key = true;
+                                nk.store(true, Ordering::Relaxed);
+                                continue;
+                            }
                             // After a gap, decoding would reference missing
                             // frames and smear text; hold the last good
                             // picture until the requested keyframe arrives.
@@ -972,15 +996,18 @@ impl DecodeWorker {
                 }
             })
             .expect("spawn decode thread");
-        DecodeWorker { tx: Some(tx), need_keyframe, stats }
+        DecodeWorker { tx: Some(tx), queued, queued_max: Arc::new(AtomicUsize::new(0)), need_keyframe, stats }
     }
 
     /// Returns false if the frame was dropped because the decoder is behind.
     fn push(&self, frame: ReceivedFrame) -> bool {
         let Some(tx) = &self.tx else { return false };
+        let depth = self.queued.fetch_add(1, Ordering::Relaxed) + 1;
+        self.queued_max.fetch_max(depth, Ordering::Relaxed);
         match tx.try_send(WorkerMsg::Frame(frame)) {
             Ok(()) => true,
             Err(_) => {
+                self.queued.fetch_sub(1, Ordering::Relaxed);
                 // Dropped frame breaks the reference chain; resync on a keyframe.
                 self.need_keyframe.store(true, Ordering::Relaxed);
                 false
@@ -992,6 +1019,10 @@ impl DecodeWorker {
         if let Some(tx) = &self.tx {
             let _ = tx.send(WorkerMsg::Reconfigure(config));
         }
+    }
+
+    fn take_queue_max(&self) -> u32 {
+        self.queued_max.swap(self.queued.load(Ordering::Relaxed), Ordering::Relaxed) as u32
     }
 
     fn take_keyframe_request(&self) -> bool {

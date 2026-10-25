@@ -121,6 +121,12 @@ impl MonitorCapture {
         // Optional APIs (newer Windows builds): no yellow border, include cursor.
         let _ = session.SetIsBorderRequired(false);
         let _ = session.SetIsCursorCaptureEnabled(true);
+        // WGC limits how often it delivers frames (about 60 per second by
+        // default); allow every refresh of a 90/120 Hz virtual monitor.
+        if let Ok(default) = session.MinUpdateInterval() {
+            tracing::debug!(default_100ns = default.Duration, "WGC minimum update interval");
+        }
+        let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000 });
         session.StartCapture()?;
         tracing::info!(monitor = %monitor.device, width = size.Width, height = size.Height, "capture started");
         Ok(MonitorCapture { pool, session, device, size })

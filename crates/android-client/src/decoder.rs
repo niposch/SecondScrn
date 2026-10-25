@@ -27,6 +27,7 @@ use secondscrn_transport::ReceivedFrame;
 // MediaFormat keys/values (android.media.MediaFormat).
 const KEY_LOW_LATENCY: &str = "low-latency";
 const KEY_PRIORITY: &str = "priority";
+const KEY_OPERATING_RATE: &str = "operating-rate";
 const KEY_COLOR_STANDARD: &str = "color-standard";
 const KEY_COLOR_RANGE: &str = "color-range";
 const KEY_COLOR_TRANSFER: &str = "color-transfer";
@@ -186,7 +187,13 @@ impl AndroidDecoder {
         let codec = MediaCodec::from_decoder_type(mime(self.config.codec)).ok_or_else(|| {
             PlatformError::new(PlatformErrorKind::Decoder, format!("no decoder for {}", self.config.codec))
         })?;
-        let format = format_for(self.config.codec, self.config.width, self.config.height, self.config.color.range);
+        let mut format = format_for(self.config.codec, self.config.width, self.config.height, self.config.color.range);
+        if codec.name().is_ok_and(|n| n.starts_with("c2.qti") || n.starts_with("OMX.qcom")) {
+            // Qualcomm decoders clock down for content they think is slow
+            // (~27 ms per frame at 3200x2136 measured); the highest
+            // operating rate keeps them at full speed, as game streamers do.
+            format.set_i32(KEY_OPERATING_RATE, i16::MAX as i32);
+        }
         codec.configure(&format, Some(&window), MediaCodecDirection::Decoder).map_err(|e| err("configure", e))?;
         codec.start().map_err(|e| err("start", e))?;
         tracing::info!(
@@ -213,6 +220,14 @@ impl AndroidDecoder {
     }
 }
 
+/// `CLOCK_MONOTONIC` in nanoseconds (the clock `System.nanoTime` and
+/// SurfaceFlinger use).
+fn monotonic_ns() -> i64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
+}
+
 fn render_loop(s: &Shared) {
     while s.running.load(Ordering::Relaxed) {
         match s.codec.dequeue_output_buffer(Duration::from_millis(50)) {
@@ -226,7 +241,11 @@ fn render_loop(s: &Shared) {
                     s.skipped.fetch_add(1, Ordering::Relaxed);
                 }
                 let pts = buf.info().presentation_time_us();
-                let _ = s.codec.release_output_buffer(buf, true);
+                // Present now. With plain `render = true` the frame carries its
+                // stream timestamp, and the platform (Xiaomi's at least) paced
+                // presentation by it like video playback: frames were held up
+                // to seconds after idle gaps or a new session.
+                let _ = s.codec.release_output_buffer_at_time(buf, monotonic_ns());
                 s.rendered.fetch_add(1, Ordering::Relaxed);
                 let mut pending = s.pending.lock().unwrap_or_else(|e| e.into_inner());
                 while let Some((p, t)) = pending.front().copied() {

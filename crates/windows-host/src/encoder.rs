@@ -233,8 +233,10 @@ impl Encoder {
         set(&CODECAPI_AVEncMPVDefaultBPictureCount, variant_u32(0), "b-frames");
         // Long GOP: IDRs are sent on demand (start, loss, decoder reset).
         set(&CODECAPI_AVEncMPVGOPSize, variant_u32(settings.fps.max(1) * 300), "gop");
-        // Favour quality: desktop frames are mostly small deltas.
-        set(&CODECAPI_AVEncCommonQualityVsSpeed, variant_u32(70), "quality vs speed");
+        // Encoder time is latency on every frame. Measured on NVENC at
+        // 3200x2136: 70 -> 11.6 ms, 33 -> 4.8 ms, 0 -> 2.5 ms per frame; 33
+        // keeps most of the quality and reaches 120 fps.
+        set(&CODECAPI_AVEncCommonQualityVsSpeed, variant_u32(33), "quality vs speed");
         // VBV of ~2 frames keeps big updates from bursting the network.
         let vbv = (settings.bitrate_bps / settings.fps.max(1) as u64 * 2).min(u32::MAX as u64) as u32;
         set(&CODECAPI_AVEncCommonBufferSize, variant_u32(vbv), "vbv");

@@ -77,12 +77,13 @@ pub fn run(args: &[String]) -> Result<()> {
                 } else if let Some(sess) = &s.session {
                     let m = &sess.metrics;
                     line = format!(
-                        "{:?} {} {} {}x{} | enc {:.0} fps {:.1} ms | {:.1} Mbit/s (est {:.1}) rtt {} loss {} | client {:.0} fps | kf {} nack {} pli {} drop {}+{} late {} cdrop {}",
+                        "{:?} {} {} {}x{} | cap {:.0} enc {:.0} fps {:.1} ms | {:.1} Mbit/s (est {:.1}) rtt {} loss {} | client {:.0} fps dec {:.0} ms q {} | kf {} nack {} pli {} drop {}+{} late {} cdrop {}",
                         sess.phase,
                         sess.device_name,
                         sess.stream.as_ref().map(|c| c.codec.to_string()).unwrap_or_default(),
                         sess.stream.as_ref().map(|c| c.width).unwrap_or(0),
                         sess.stream.as_ref().map(|c| c.height).unwrap_or(0),
+                        m.pipeline.capture_fps,
                         m.pipeline.encode_fps,
                         m.pipeline.encode_ms_avg,
                         m.send_rate_bps as f64 / 1e6,
@@ -90,6 +91,8 @@ pub fn run(args: &[String]) -> Result<()> {
                         m.rtt_ms.map(|r| format!("{r:.0}ms")).unwrap_or("-".into()),
                         m.loss.map(|l| format!("{:.1}%", l * 100.0)).unwrap_or("-".into()),
                         m.client.map(|c| c.render_fps).unwrap_or(0.0),
+                        m.client.map(|c| c.decode_time_ms_avg).unwrap_or(0.0),
+                        m.client.map(|c| c.decode_queue_max).unwrap_or(0),
                         m.pipeline.keyframes,
                         m.nacks,
                         m.plis,

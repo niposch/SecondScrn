@@ -1619,6 +1619,7 @@ version = "0.1.0"
 dependencies = [
  "android_log-sys",
  "jni",
+ "libc",
  "ndk",
  "ndk-sys",
  "secondscrn-diagnostics",

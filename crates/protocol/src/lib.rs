@@ -365,6 +365,9 @@ pub struct ClientStats {
     pub render_fps: f32,
     /// Frames that arrived later than the frame interval and were skipped.
     pub late_frames: u64,
+    /// Most frames waiting for the decoder at once since the last report.
+    #[serde(default)]
+    pub decode_queue_max: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

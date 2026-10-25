@@ -72,9 +72,11 @@ class MainActivity : ComponentActivity() {
             windowManager.defaultDisplay.getRealMetrics(m)
             m.widthPixels to m.heightPixels
         }
+        // The highest rate the panel supports, not the current one: tablets
+        // drop to 60 Hz for apps that don't ask for more.
         @Suppress("DEPRECATION")
-        val refresh = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display else windowManager.defaultDisplay)
-            ?.refreshRate?.roundToInt() ?: 60
+        val d = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display else windowManager.defaultDisplay
+        val refresh = d?.supportedModes?.maxOfOrNull { it.refreshRate }?.roundToInt() ?: d?.refreshRate?.roundToInt() ?: 60
         repo.setDisplay(w, h, refresh.coerceIn(30, 240), resources.displayMetrics.densityDpi)
     }
 
