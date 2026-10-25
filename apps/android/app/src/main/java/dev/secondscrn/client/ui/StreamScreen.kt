@@ -23,8 +23,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -215,7 +222,7 @@ private fun SessionOverlay(state: ClientState, repo: ClientRepository, onClose: 
             ResolutionSelector(state, repo)
             Text("Frame rate", style = MaterialTheme.typography.labelLarge)
             FrameRateSelector(state, repo)
-            ScaleStepper(state, repo)
+            DisplayDropdowns(state, repo)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = state.touchInput,
@@ -281,17 +288,49 @@ fun FrameRateSelector(state: ClientState, repo: ClientRepository) {
     }
 }
 
-/** Windows' scale factor for this monitor, as a compact stepper. */
+/** A labelled drop-down that takes little room in the options panel. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScaleStepper(state: ClientState, repo: ClientRepository) {
-    val current = state.uiScale?.toInt() ?: return
-    val options = state.uiScales.map { it.toInt() }
-    val i = options.indexOf(current)
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Windows scaling", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(end = 8.dp))
-        OutlinedButton(onClick = { repo.setUiScale(options[i - 1]) }, enabled = i > 0) { Text("−") }
-        Text("$current %", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 8.dp))
-        OutlinedButton(onClick = { repo.setUiScale(options[i + 1]) }, enabled = i in 0 until options.size - 1) { Text("+") }
+private fun CompactDropdown(label: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = it }) {
+        OutlinedTextField(
+            value = options.getOrElse(selected) { "" },
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
+            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).width(220.dp),
+        )
+        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEachIndexed { i, option ->
+                DropdownMenuItem(text = { Text(option) }, onClick = {
+                    open = false
+                    if (i != selected) onSelect(i)
+                })
+            }
+        }
+    }
+}
+
+/** Windows scaling and video codec, side by side. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun DisplayDropdowns(state: ClientState, repo: ClientRepository) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val scale = state.uiScale?.toInt()
+        if (scale != null) {
+            val scales = state.uiScales.map { it.toInt() }
+            CompactDropdown("Windows scaling", scales.map { "$it %" }, scales.indexOf(scale)) { repo.setUiScale(scales[it]) }
+        }
+        // Automatic first, then what this tablet decodes (software marked).
+        val codecs = state.codecs
+        val labels = listOf("Automatic") + codecs.map { it.name + if (it.hardware) "" else " (software)" }
+        val selected = state.preferredCodec?.let { p -> codecs.indexOfFirst { it.codec == p } + 1 } ?: 0
+        CompactDropdown("Video codec", labels, selected) {
+            repo.setPreferredCodec(if (it == 0) null else codecs[it - 1].codec)
+        }
     }
 }
 

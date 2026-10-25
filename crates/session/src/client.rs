@@ -301,6 +301,27 @@ impl ClientEngine {
         self.inner.send_to_session(ClientMessage::SetUiScale { percent });
     }
 
+    /// Picks the video codec (`None` = automatic). Applies to the running
+    /// session by reconnecting: the codec is fixed per WebRTC session.
+    pub fn set_preferred_codec(&self, codec: Option<secondscrn_protocol::Codec>) {
+        let changed = {
+            let mut s = lock(&self.inner.settings);
+            let changed = s.preferred_codec != codec;
+            s.preferred_codec = codec;
+            changed
+        };
+        self.inner.save_settings();
+        self.inner.publish();
+        let host = lock(&self.inner.state).host.clone();
+        if changed && let Some(h) = host {
+            let streaming = lock(&self.inner.state).stream.is_some();
+            if streaming {
+                tracing::info!(?codec, "reconnecting with another codec");
+                self.connect(ConnectTarget { address: h.address, port: h.port, fingerprint: Some(h.fingerprint) });
+            }
+        }
+    }
+
     /// Call after the video surface was recreated.
     pub fn request_keyframe(&self) {
         self.inner.send_to_session(ClientMessage::RequestKeyframe);
@@ -770,6 +791,8 @@ async fn run_connection(
     let mut frames_received = 0u64;
     let mut late_frames = 0u64;
     let mut odd_frames = 0u64;
+    let mut behind_seen = 0u64;
+    let mut behind_events: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
     let mut last_rtp: Option<u64> = None;
     // Render rate from frame deltas between (2 s apart) stats ticks.
     let mut last_render: (u64, Instant) = (0, Instant::now());
@@ -801,9 +824,11 @@ async fn run_connection(
                     }
                     HostMessage::StreamChanged { stream: s } => {
                         tracing::info!(width = s.width, height = s.height, fps = s.max_fps, "stream reconfigured");
-                        // The decoder only restarts for a new format; a new
-                        // frame rate arrives in-band with the next keyframe.
-                        if (s.codec, s.width, s.height) != (stream.codec, stream.width, stream.height) {
+                        // New format or frame rate: the decoder is set up for
+                        // both (the rate decides its low-latency mode).
+                        if (s.codec, s.width, s.height, s.max_fps)
+                            != (stream.codec, stream.width, stream.height, stream.max_fps)
+                        {
                             worker.reconfigure(s.clone());
                         }
                         stream = s;
@@ -884,6 +909,31 @@ async fn run_connection(
                 if last_rx.elapsed() > PEER_TIMEOUT {
                     break Err(SessionError::Timeout("the PC stopped responding"));
                 }
+                // The decoder can't keep up with this frame rate (e.g. 144 fps
+                // at native resolution): step down one frame rate rather than
+                // stutter through repeated resyncs.
+                let behind = worker.times_behind();
+                if behind > behind_seen {
+                    behind_events.push_back(Instant::now());
+                    behind_seen = behind;
+                }
+                while behind_events.front().is_some_and(|t| t.elapsed() > Duration::from_secs(10)) {
+                    behind_events.pop_front();
+                }
+                if behind_events.len() >= 2 {
+                    behind_events.clear();
+                    let display = *lock(&inner.display);
+                    let lower = display
+                        .map(|d| d.frame_rate_options())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|r| *r >= 60 && *r < stream.max_fps)
+                        .max();
+                    if let Some(fps) = lower {
+                        tracing::warn!(from = stream.max_fps, to = fps, "decoder can't keep up, lowering the frame rate");
+                        ch.send(&ClientMessage::SetFrameRate { fps }).await?;
+                    }
+                }
                 if worker.take_keyframe_request() {
                     media.request_keyframe();
                     ch.send(&ClientMessage::RequestKeyframe).await?;
@@ -912,6 +962,7 @@ async fn run_connection(
                     render_fps: metrics.render_fps,
                     late_frames,
                     decode_queue_max: worker.take_queue_max(),
+                    stutters: ds.stutters,
                 }}).await?;
                 lock(&inner.state).metrics = metrics.clone();
                 inner.publish();
@@ -933,6 +984,8 @@ struct DecodeWorker {
     /// Frames waiting for the decoder, and the most since the last report.
     queued: Arc<AtomicUsize>,
     queued_max: Arc<AtomicUsize>,
+    /// Times the decoder fell behind and had to skip to a keyframe.
+    behind: Arc<AtomicU64>,
     need_keyframe: Arc<AtomicBool>,
     stats: Arc<Mutex<DecoderStats>>,
 }
@@ -949,6 +1002,8 @@ impl DecodeWorker {
         let (nk, st) = (need_keyframe.clone(), stats.clone());
         let queued = Arc::new(AtomicUsize::new(0));
         let q = queued.clone();
+        let behind_count = Arc::new(AtomicU64::new(0));
+        let bc = behind_count.clone();
         std::thread::Builder::new()
             .name("secondscrn-decode".into())
             .spawn(move || {
@@ -982,6 +1037,7 @@ impl DecodeWorker {
                             // long, skip to the next keyframe instead.
                             if behind > 0 && !f.keyframe && f.arrival.elapsed() > MAX_DECODE_WAIT {
                                 if !waiting_for_key {
+                                    bc.fetch_add(1, Ordering::Relaxed);
                                     tracing::warn!(
                                         behind,
                                         waited_ms = f.arrival.elapsed().as_millis() as u64,
@@ -1019,7 +1075,14 @@ impl DecodeWorker {
                 }
             })
             .expect("spawn decode thread");
-        DecodeWorker { tx: Some(tx), queued, queued_max: Arc::new(AtomicUsize::new(0)), need_keyframe, stats }
+        DecodeWorker {
+            tx: Some(tx),
+            queued,
+            queued_max: Arc::new(AtomicUsize::new(0)),
+            behind: behind_count,
+            need_keyframe,
+            stats,
+        }
     }
 
     /// Returns false if the frame was dropped because the decoder is behind.
@@ -1042,6 +1105,10 @@ impl DecodeWorker {
         if let Some(tx) = &self.tx {
             let _ = tx.send(WorkerMsg::Reconfigure(config));
         }
+    }
+
+    fn times_behind(&self) -> u64 {
+        self.behind.load(Ordering::Relaxed)
     }
 
     fn take_queue_max(&self) -> u32 {

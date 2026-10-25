@@ -28,6 +28,7 @@ use secondscrn_transport::ReceivedFrame;
 const KEY_LOW_LATENCY: &str = "low-latency";
 const KEY_PRIORITY: &str = "priority";
 const KEY_OPERATING_RATE: &str = "operating-rate";
+const KEY_FRAME_RATE: &str = "frame-rate";
 const KEY_COLOR_STANDARD: &str = "color-standard";
 const KEY_COLOR_RANGE: &str = "color-range";
 const KEY_COLOR_TRANSFER: &str = "color-transfer";
@@ -72,13 +73,24 @@ pub fn is_software(name: &str) -> bool {
     n.starts_with("c2.android.") || n.starts_with("omx.google.") || n.starts_with("c2.google.")
 }
 
-fn format_for(codec: Codec, width: u32, height: u32, range: ColorRange) -> MediaFormat {
+/// Pixels per second up to which the decoder runs in low-latency mode. That
+/// mode finishes each picture before starting the next, so throughput is
+/// 1 / decode time: measured ~65 fps at 3200x2136 (~13 ms per picture) on a
+/// Snapdragon tablet. Above this the decoder pipelines pictures, one frame
+/// more delay but enough throughput for 120/144 fps.
+const LOW_LATENCY_MAX_PIXEL_RATE: u64 = 3200 * 2136 * 60;
+
+fn low_latency(width: u32, height: u32, fps: u32) -> bool {
+    width as u64 * height as u64 * fps.max(1) as u64 <= LOW_LATENCY_MAX_PIXEL_RATE
+}
+
+fn format_for(codec: Codec, width: u32, height: u32, range: ColorRange, low_latency: bool) -> MediaFormat {
     let mut f = MediaFormat::new();
     f.set_str("mime", mime(codec));
     f.set_i32("width", width as i32);
     f.set_i32("height", height as i32);
-    f.set_i32(KEY_LOW_LATENCY, 1);
-    f.set_i32(KEY_QTI_LOW_LATENCY, 1);
+    f.set_i32(KEY_LOW_LATENCY, low_latency as i32);
+    f.set_i32(KEY_QTI_LOW_LATENCY, low_latency as i32);
     f.set_i32(KEY_PRIORITY, 0); // realtime
     // Fallback colour description for streams whose VUI is ignored.
     f.set_i32(KEY_COLOR_STANDARD, COLOR_STANDARD_BT709);
@@ -106,7 +118,9 @@ pub fn probe() -> Vec<CodecCapability> {
             // A fresh instance per attempt: a failed configure can leave the
             // codec in an error state.
             let Some(c) = MediaCodec::from_decoder_type(mime(codec)) else { break };
-            if c.configure(&format_for(codec, w, h, ColorRange::Limited), None, MediaCodecDirection::Decoder).is_ok() {
+            if c.configure(&format_for(codec, w, h, ColorRange::Limited, true), None, MediaCodecDirection::Decoder)
+                .is_ok()
+            {
                 out.push(CodecCapability {
                     codec,
                     implementation: name.clone(),
@@ -130,6 +144,7 @@ struct Shared {
     rendered: AtomicU64,
     /// Decoded but not shown because a newer picture was ready.
     skipped: AtomicU64,
+    stutters: AtomicU64,
     pending: Mutex<VecDeque<(i64, Instant)>>,
     decode_ms: Mutex<Ewma>,
 }
@@ -172,11 +187,18 @@ pub struct AndroidDecoder {
     config: StreamConfig,
     active: Option<Active>,
     stats: DecoderStats,
+    /// Diagnostics: input-buffer wait (s), copy (s), frames, window start.
+    timing: (f64, f64, u64, Instant, f64, f64),
 }
 
 impl AndroidDecoder {
     pub fn new(config: &StreamConfig) -> Result<Self, PlatformError> {
-        let mut d = AndroidDecoder { config: config.clone(), active: None, stats: DecoderStats::default() };
+        let mut d = AndroidDecoder {
+            config: config.clone(),
+            active: None,
+            stats: DecoderStats::default(),
+            timing: (0.0, 0.0, 0, Instant::now(), 0.0, 0.0),
+        };
         d.ensure_codec()?;
         Ok(d)
     }
@@ -192,24 +214,39 @@ impl AndroidDecoder {
             // Stops the old codec; keep its count so stats stay monotonic.
             self.stats.frames_rendered += old.rendered();
             self.stats.frames_dropped += old.shared.skipped.load(Ordering::Relaxed);
+            self.stats.stutters += old.shared.stutters.load(Ordering::Relaxed);
         }
         let Some(window) = window else { return Ok(false) };
         let err = |what: &str, e: ndk::media_error::MediaError| {
             PlatformError::new(PlatformErrorKind::Decoder, format!("{what}: {e:?}"))
         };
-        let codec = MediaCodec::from_decoder_type(mime(self.config.codec)).ok_or_else(|| {
-            PlatformError::new(PlatformErrorKind::Decoder, format!("no decoder for {}", self.config.codec))
-        })?;
-        let mut format = format_for(self.config.codec, self.config.width, self.config.height, self.config.color.range);
+        let (w, h, fps) = (self.config.width, self.config.height, self.config.max_fps);
+        let low_latency = low_latency(w, h, fps);
+        // Qualcomm ships a separate low-latency variant of its decoders;
+        // prefer it where it exists (and low latency is affordable).
+        let codec = MediaCodec::from_decoder_type(mime(self.config.codec))
+            .and_then(|c| {
+                if !low_latency {
+                    return Some(c);
+                }
+                let variant = format!("{}.low_latency", c.name().ok()?);
+                Some(MediaCodec::from_codec_name(&variant).unwrap_or(c))
+            })
+            .ok_or_else(|| {
+                PlatformError::new(PlatformErrorKind::Decoder, format!("no decoder for {}", self.config.codec))
+            })?;
+        let mut format = format_for(self.config.codec, w, h, self.config.color.range, low_latency);
         if codec.name().is_ok_and(|n| n.starts_with("c2.qti") || n.starts_with("OMX.qcom")) {
             // Qualcomm decoders clock down for content they think is slow
             // (~27 ms per frame at 3200x2136 measured); the highest
             // operating rate keeps them at full speed, as game streamers do.
             format.set_i32(KEY_OPERATING_RATE, i16::MAX as i32);
         }
+        // Decoders size their clocks by the declared frame rate (default
+        // ~30); at 120 fps and native resolution they fell behind.
+        format.set_i32(KEY_FRAME_RATE, self.config.max_fps.max(30) as i32);
         // A window larger than the stream means the UI wants upscaling (it
         // sizes the surface to the view only then).
-        let (w, h) = (self.config.width, self.config.height);
         let larger = window.width() > w as i32 || window.height() > h as i32;
         let mut upscaler = None;
         let mut output_window = window.clone();
@@ -228,6 +265,7 @@ impl AndroidDecoder {
         codec.start().map_err(|e| err("start", e))?;
         tracing::info!(
             decoder = %codec.name().unwrap_or_default(),
+            low_latency,
             width = self.config.width,
             height = self.config.height,
             "decoder started"
@@ -237,6 +275,7 @@ impl AndroidDecoder {
             running: AtomicBool::new(true),
             rendered: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
+            stutters: AtomicU64::new(0),
             pending: Mutex::new(VecDeque::new()),
             decode_ms: Mutex::new(Ewma::new(0.1)),
         });
@@ -258,7 +297,14 @@ fn monotonic_ns() -> i64 {
     ts.tv_sec * 1_000_000_000 + ts.tv_nsec
 }
 
+/// Frames closer than this in capture time are continuous motion.
+const CONTINUOUS_US: i64 = 25_000;
+
 fn render_loop(s: &Shared) {
+    // Previous picture: capture time (µs) and when it was shown.
+    let mut last: Option<(i64, Instant)> = None;
+    // Diagnostics: outputs, time in release, pictures skipped, window start.
+    let mut diag = (0u64, 0f64, 0u64, Instant::now());
     while s.running.load(Ordering::Relaxed) {
         match s.codec.dequeue_output_buffer(Duration::from_millis(50)) {
             Ok(DequeuedOutputBufferInfoResult::Buffer(mut buf)) => {
@@ -275,8 +321,30 @@ fn render_loop(s: &Shared) {
                 // stream timestamp, and the platform (Xiaomi's at least) paced
                 // presentation by it like video playback: frames were held up
                 // to seconds after idle gaps or a new session.
+                let r0 = Instant::now();
                 let _ = s.codec.release_output_buffer_at_time(buf, monotonic_ns());
+                diag.1 += r0.elapsed().as_secs_f64();
+                diag.0 += 1;
+                if diag.3.elapsed() >= Duration::from_secs(2) {
+                    let skipped = s.skipped.load(Ordering::Relaxed);
+                    tracing::debug!(
+                        shown = diag.0,
+                        skipped = skipped - diag.2,
+                        release_ms = format!("{:.2}", diag.1 * 1000.0 / diag.0 as f64),
+                        "decoder output timing"
+                    );
+                    diag = (0, 0.0, skipped, Instant::now());
+                }
                 s.rendered.fetch_add(1, Ordering::Relaxed);
+                let now = Instant::now();
+                if let Some((prev_pts, prev_at)) = last {
+                    let captured = pts - prev_pts;
+                    let shown = now.duration_since(prev_at).as_micros() as i64;
+                    if captured > 0 && captured <= CONTINUOUS_US && shown - captured > captured {
+                        s.stutters.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                last = Some((pts, now));
                 let mut pending = s.pending.lock().unwrap_or_else(|e| e.into_inner());
                 while let Some((p, t)) = pending.front().copied() {
                     if p > pts {
@@ -314,9 +382,14 @@ impl VideoDecoder for AndroidDecoder {
         }
         let codec = &active.shared.codec;
         let pts_us = (frame.rtp_time as i64) * 1_000_000 / 90_000;
+        let t0 = Instant::now();
         let mut input = None;
-        for _ in 0..3 {
-            match codec.dequeue_input_buffer(Duration::from_millis(15)) {
+        // Wait out short stalls (a large keyframe takes longer to decode):
+        // dropping a frame here breaks the reference chain and costs
+        // everything up to the next keyframe. Sustained backlog is handled by
+        // the session's decode-queue age limit.
+        for _ in 0..10 {
+            match codec.dequeue_input_buffer(Duration::from_millis(20)) {
                 Ok(DequeuedInputBufferResult::Buffer(b)) => {
                     input = Some(b);
                     break;
@@ -340,14 +413,35 @@ impl VideoDecoder for AndroidDecoder {
                 format!("frame of {} bytes exceeds decoder buffer of {}", frame.data.len(), dst.len()),
             ));
         }
-        for (d, s) in dst.iter_mut().zip(frame.data.iter()) {
-            d.write(*s);
+        let t1 = Instant::now();
+        // SAFETY: MaybeUninit<u8> has the layout of u8; every byte written.
+        unsafe {
+            std::ptr::copy_nonoverlapping(frame.data.as_ptr(), dst.as_mut_ptr() as *mut u8, frame.data.len());
         }
+        let t2 = Instant::now();
         active.shared.pending.lock().unwrap_or_else(|e| e.into_inner()).push_back((pts_us, frame.arrival));
         codec
             .queue_input_buffer(buf, 0, frame.data.len(), pts_us as u64, 0)
             .map_err(|e| PlatformError::new(PlatformErrorKind::Decoder, format!("queue input: {e:?}")))?;
         self.stats.frames_decoded += 1;
+        let total = t0.elapsed().as_secs_f64();
+        self.timing.4 += total;
+        self.timing.5 = self.timing.5.max(total);
+        self.timing.0 += t1.duration_since(t0).as_secs_f64();
+        self.timing.1 += t2.duration_since(t1).as_secs_f64();
+        self.timing.2 += 1;
+        if self.timing.3.elapsed() >= Duration::from_secs(2) {
+            let n = self.timing.2.max(1) as f64;
+            tracing::debug!(
+                frames = self.timing.2,
+                input_wait_ms = format!("{:.1}", self.timing.0 * 1000.0 / n),
+                copy_ms = format!("{:.2}", self.timing.1 * 1000.0 / n),
+                total_ms = format!("{:.1}", self.timing.4 * 1000.0 / n),
+                max_ms = format!("{:.1}", self.timing.5 * 1000.0),
+                "decoder input timing"
+            );
+            self.timing = (0.0, 0.0, 0, Instant::now(), 0.0, 0.0);
+        }
         Ok(DecodeOutcome::Ok)
     }
 
@@ -356,6 +450,7 @@ impl VideoDecoder for AndroidDecoder {
         if let Some(a) = &self.active {
             s.frames_rendered += a.rendered();
             s.frames_dropped += a.shared.skipped.load(Ordering::Relaxed);
+            s.stutters += a.shared.stutters.load(Ordering::Relaxed);
             s.decode_ms_avg = a.shared.decode_ms.lock().unwrap_or_else(|e| e.into_inner()).get();
         }
         s

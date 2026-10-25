@@ -104,6 +104,35 @@ Measured on the tablet with an animated test window on its monitor:
   combination and was lost whenever displays or modes changed). Verified by
   moving the monitor, restarting the session and checking it returned.
 
+### High frame rates (0.1, fifth pass)
+
+Measured with a fast animation on the tablet's monitor (release host):
+
+| Setting | Before | After |
+|---|---|---|
+| native, 60 fps | 71 fps shown, 10 stutters/s | 59 fps, 0.2/s |
+| native, 90 fps | — | 90 fps, 1.8/s |
+| native, 120/144 fps | 44–52 fps, decoder backlog | automatically lowered to 120 → 90 |
+| 50 %, 120/144 fps | 72–82 fps | 107–120 fps |
+
+* The PC sends on a fixed clock (one frame per interval, newest picture)
+  instead of following the capture rhythm, which is the compositor's (often
+  the main display's 144+ Hz) and picked frames unevenly.
+* The virtual monitor runs at the chosen frame rate.
+* The tablet's decoder: low-latency mode (one picture at a time) only up to
+  3200×2136 at 60 fps worth of pixels, pipelined above; brief input stalls
+  are waited out instead of dropping a frame (which cost everything up to the
+  next keyframe). At native resolution the decoder still manages only
+  ~100–110 fps; when it falls behind twice in 10 s the tablet steps the frame
+  rate down (144 → 120 → 90 → 60).
+* The video codec can be chosen on the tablet (Automatic, H.264, HEVC, AV1);
+  the session reconnects with it. Windows scaling and codec are drop-downs.
+* SRTP on the tablet uses the ARMv8 AES/PMULL instructions
+  (`.cargo/config.toml`); not a bottleneck before, but cheaper per packet.
+* Note: the debug build of the host is too slow for 120 fps at native
+  resolution (its software crypto and packetizing overflowed the send
+  queue); measurements above use the release build, as shipped.
+
 ## Not yet verified (hardware-dependent claims)
 
 * End-to-end latency, smoothness at 60 fps, battery, thermals, colour accuracy
@@ -115,6 +144,8 @@ Measured on the tablet with an animated test window on its monitor:
 * Pen pressure/tilt on a physical stylus (the injection path is tested with
   synthetic frames; the tilt direction mapping from Android is unverified).
 * Three- and more-finger gestures on the physical tablet.
+* Frame pacing of the Snapdragon GSR path at 120 fps (some unevenness
+  measured: it presents without waiting for vsync).
 * Snapdragon GSR on Adreno GPUs other than the test tablet's; image quality
   compared with the compositor's scaling (only checked by eye).
 

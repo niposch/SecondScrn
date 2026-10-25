@@ -1,0 +1,6 @@
+# Hardware AES and carry-less multiplication for SRTP (AES-GCM) on 64-bit ARM
+# tablets: the RustCrypto crates only use the ARMv8 Crypto Extensions when
+# these flags are set, and otherwise fall back to constant-time software.
+# (x86-64 detects AES-NI/PCLMULQDQ at run time without flags.)
+[target.aarch64-linux-android]
+rustflags = ["--cfg", "aes_armv8", "--cfg", "polyval_armv8"]

@@ -20,6 +20,7 @@ import uniffi.secondscrn_client.PointerKind
 import uniffi.secondscrn_client.Preset
 import uniffi.secondscrn_client.SecondScrnClient
 import uniffi.secondscrn_client.TouchPoint
+import uniffi.secondscrn_client.VideoCodec
 
 /**
  * Owns the Rust client and adapts it to Android: state as a StateFlow,
@@ -99,6 +100,7 @@ class ClientRepository(private val context: Context) {
     fun setFrameRate(fps: Int) = client.setFrameRate(fps.toUInt())
     fun setUiScale(percent: Int) = client.setUiScale(percent.toUInt())
     fun setSuperResolution(enabled: Boolean) = client.setSuperResolution(enabled)
+    fun setPreferredCodec(codec: VideoCodec?) = client.setPreferredCodec(codec)
     fun setDisplay(width: Int, height: Int, refreshHz: Int, dpi: Int) =
         client.setDisplay(width.toUInt(), height.toUInt(), refreshHz.toUInt(), dpi.toUInt())
 

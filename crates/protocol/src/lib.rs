@@ -368,6 +368,9 @@ pub struct ClientStats {
     /// Most frames waiting for the decoder at once since the last report.
     #[serde(default)]
     pub decode_queue_max: u32,
+    /// Pictures shown noticeably late during continuous motion (total).
+    #[serde(default)]
+    pub stutters: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

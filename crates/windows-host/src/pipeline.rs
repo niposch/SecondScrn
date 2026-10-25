@@ -138,6 +138,8 @@ struct Worker {
     last_submit: Option<Instant>,
     last_capture: Option<Instant>,
     last_keyframe: Option<Instant>,
+    /// When the next captured frame may be sent (fixed cadence).
+    next_tick: Option<Instant>,
     refreshes: u32,
     fps: u32,
     start: Instant,
@@ -199,6 +201,7 @@ impl Worker {
             last_submit: None,
             last_capture: None,
             last_keyframe: None,
+            next_tick: None,
             refreshes: REFRESH_COUNT,
             start: now,
             in_flight: VecDeque::new(),
@@ -261,7 +264,7 @@ impl Worker {
     fn next_deadline(&self, now: Instant) -> Instant {
         let Some(last) = self.last_submit else { return now + Duration::from_millis(50) };
         if self.pending_capture {
-            return last + self.frame_interval();
+            return self.next_tick.unwrap_or(last);
         }
         if self.refreshes < REFRESH_COUNT {
             return last + REFRESH_DELAY;
@@ -275,7 +278,15 @@ impl Worker {
         }
         let now = Instant::now();
         let since = self.last_submit.map(|t| now.duration_since(t));
-        if self.pending_capture && since.is_none_or(|d| d >= self.frame_interval()) {
+        if self.pending_capture && self.next_tick.is_none_or(|t| now >= t) {
+            // Fixed send clock: one frame per interval, the newest picture.
+            // Following the capture rhythm instead (often the main display's
+            // 144+ Hz) picked frames unevenly, which showed as stutter.
+            let iv = self.frame_interval();
+            self.next_tick = Some(match self.next_tick {
+                Some(t) if now.saturating_duration_since(t) < iv => t + iv,
+                _ => now + iv, // idle before: restart the clock
+            });
             self.pending_capture = false;
             if let Some(frame) = self.capture.latest().map_err(|e| err(PlatformErrorKind::Capture, e))? {
                 let (w, h) = (self.targets[0].width, self.targets[0].height);

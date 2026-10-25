@@ -175,6 +175,9 @@ pub struct DecoderStats {
     pub frames_rendered: u64,
     pub frames_dropped: u64,
     pub decode_ms_avg: f32,
+    /// During continuous motion, pictures shown more than a frame later
+    /// than their capture spacing: a missed refresh, visible as stutter.
+    pub stutters: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

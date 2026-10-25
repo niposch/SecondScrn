@@ -567,6 +567,10 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
         last_seq: None,
         prefix: None,
         send_drops: 0,
+        gaps: 0,
+        last_seq_before: None,
+        overflowed: false,
+        overflows: 0,
     };
     tokio::spawn(async move {
         let reason = driver.run(cmd_rx, frame_rx, net_rx).await;
@@ -603,6 +607,12 @@ struct Driver {
     prefix: Option<(u64, Vec<u8>)>,
     /// Packets dropped because the socket's send buffer was full.
     send_drops: u64,
+    /// Diagnostics: frames after a gap, and the previous frame's last sequence.
+    gaps: u64,
+    last_seq_before: Option<u64>,
+    /// A frame was dropped because the event queue was full.
+    overflowed: bool,
+    overflows: u64,
 }
 
 impl Driver {
@@ -822,10 +832,22 @@ impl Driver {
                 // complete are simply not emitted), so check RTP sequence
                 // continuity as well.
                 let (start, end) = (**data.seq_range.start(), **data.seq_range.end());
+                self.last_seq_before = self.last_seq;
                 let gap = self.last_seq.is_some_and(|last| start > last + 1);
                 self.last_seq = Some(self.last_seq.map_or(end, |l| l.max(end)));
-                let contiguous = data.contiguous && !gap;
+                let contiguous = data.contiguous && !gap && !std::mem::take(&mut self.overflowed);
                 if !contiguous {
+                    self.gaps += 1;
+                    if self.gaps.is_power_of_two() {
+                        tracing::warn!(
+                            gaps = self.gaps,
+                            str0m_contiguous = data.contiguous,
+                            start,
+                            end,
+                            last = ?self.last_seq_before,
+                            "frame after a gap"
+                        );
+                    }
                     self.request_keyframe();
                 }
                 let rtp_time = data.time.numer();
@@ -850,8 +872,15 @@ impl Driver {
                     || matches!(self.role, Role::Receiver { codec } if secondscrn_graphics::bitstream::is_keyframe(codec, &payload));
                 let frame = ReceivedFrame { data: payload, rtp_time, arrival: data.network_time, keyframe, contiguous };
                 if self.events.try_send(TransportEvent::Frame(frame)).is_err() {
-                    // Decoder is behind: the dropped frame breaks the reference
-                    // chain, so ask for a fresh keyframe.
+                    // The client is behind: the dropped frame breaks the
+                    // reference chain. Mark what follows as after a gap (so it
+                    // isn't decoded against a missing picture) and ask for a
+                    // fresh keyframe.
+                    self.overflowed = true;
+                    self.overflows += 1;
+                    if self.overflows.is_power_of_two() {
+                        tracing::warn!(overflows = self.overflows, "frame dropped: event queue full");
+                    }
                     self.request_keyframe();
                 }
             }

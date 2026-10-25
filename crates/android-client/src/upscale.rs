@@ -169,6 +169,7 @@ impl Upscaler {
                         return;
                     }
                 }
+                let mut diag = (0u64, 0f64, std::time::Instant::now());
                 while r.load(Ordering::Relaxed) {
                     {
                         let mut ready = w.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -187,9 +188,20 @@ impl Upscaler {
                             continue;
                         }
                     };
+                    let t = std::time::Instant::now();
                     match gl.draw(&image) {
                         Ok(()) => {
                             p.fetch_add(1, Ordering::Relaxed);
+                            diag.0 += 1;
+                            diag.1 += t.elapsed().as_secs_f64();
+                            if diag.2.elapsed() >= Duration::from_secs(2) {
+                                tracing::debug!(
+                                    presented = diag.0,
+                                    draw_ms = format!("{:.2}", diag.1 * 1000.0 / diag.0 as f64),
+                                    "upscaler timing"
+                                );
+                                diag = (0, 0.0, std::time::Instant::now());
+                            }
                         }
                         Err(e) => tracing::warn!(error = %e, "upscaling failed"),
                     }

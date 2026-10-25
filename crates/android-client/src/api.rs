@@ -96,6 +96,37 @@ pub struct TouchPoint {
     pub y: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum VideoCodec {
+    H264,
+    Hevc,
+    Av1,
+}
+
+/// A codec this tablet can decode.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CodecChoice {
+    pub codec: VideoCodec,
+    pub name: String,
+    pub hardware: bool,
+}
+
+fn codec_from(c: secondscrn_protocol::Codec) -> VideoCodec {
+    match c {
+        secondscrn_protocol::Codec::H264 => VideoCodec::H264,
+        secondscrn_protocol::Codec::H265 => VideoCodec::Hevc,
+        secondscrn_protocol::Codec::Av1 => VideoCodec::Av1,
+    }
+}
+
+fn codec_to(c: VideoCodec) -> secondscrn_protocol::Codec {
+    match c {
+        VideoCodec::H264 => secondscrn_protocol::Codec::H264,
+        VideoCodec::Hevc => secondscrn_protocol::Codec::H265,
+        VideoCodec::Av1 => secondscrn_protocol::Codec::Av1,
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ResolutionChoice {
     pub scale_percent: u32,
@@ -167,6 +198,9 @@ pub struct ClientState {
     /// streaming, and the values Windows allows.
     pub ui_scale: Option<u32>,
     pub ui_scales: Vec<u32>,
+    /// Codec picked by the user (`None` = automatic) and those available.
+    pub preferred_codec: Option<VideoCodec>,
+    pub codecs: Vec<CodecChoice>,
     /// Snapdragon GSR upscaling: the setting, and whether this device can.
     pub super_resolution: bool,
     pub super_resolution_supported: bool,
@@ -299,6 +333,12 @@ pub fn to_ffi(s: &ClientSnapshot) -> ClientState {
         frame_rates: s.frame_rates.clone(),
         ui_scale: s.ui_scale.as_ref().map(|u| u.current),
         ui_scales: s.ui_scale.as_ref().map(|u| u.options.clone()).unwrap_or_default(),
+        preferred_codec: s.settings.preferred_codec.map(codec_from),
+        codecs: s
+            .decoders
+            .iter()
+            .map(|d| CodecChoice { codec: codec_from(d.codec), name: d.codec.to_string(), hardware: d.hardware })
+            .collect(),
         super_resolution: s.settings.super_resolution,
         super_resolution_supported: crate::super_resolution_supported(),
     }
@@ -483,6 +523,11 @@ impl SecondScrnClient {
     /// Sets the Windows scale factor of this tablet's monitor (percent).
     pub fn set_ui_scale(&self, percent: u32) {
         self.engine.set_ui_scale(percent);
+    }
+
+    /// Picks the video codec (`None` = automatic); reconnects if streaming.
+    pub fn set_preferred_codec(&self, codec: Option<VideoCodec>) {
+        self.engine.set_preferred_codec(codec.map(codec_to));
     }
 
     /// Snapdragon GSR upscaling of streams below the panel resolution. Takes

@@ -65,8 +65,10 @@ pub fn negotiate(input: &NegotiationInput<'_>) -> Result<StreamConfig, Negotiati
     for (i, codec) in order.iter().enumerate() {
         for enc in input.encoders.iter().filter(|e| e.codec == *codec && fits(e, w, h)) {
             for dec in input.decoders.iter().filter(|d| d.codec == *codec && fits(d, w, h)) {
-                // A forced codec wins over the hardware preference.
-                let s = if input.forced_codec == Some(*codec) { (0, 0) } else { score(i, enc, dec) };
+                // A codec forced on the PC, or picked by the user on the
+                // tablet, wins over the hardware preference.
+                let chosen = input.forced_codec.or(input.client_preferred) == Some(*codec);
+                let s = if chosen { (0, 0) } else { score(i, enc, dec) };
                 if best.as_ref().is_none_or(|(b, _, _)| s < *b) {
                     best = Some((s, enc, dec));
                 }
@@ -156,6 +158,18 @@ mod tests {
         let enc = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, true, BIG, 60)];
         let dec = [cap(Codec::H264, true, BIG, 60), cap(Codec::H265, false, BIG, 60)];
         assert_eq!(negotiate(&input(&enc, &dec, display(1920, 1200))).unwrap().codec, Codec::H264);
+    }
+
+    #[test]
+    fn codec_picked_on_the_tablet_wins_over_hardware_preference() {
+        let enc = [cap(Codec::H265, true, BIG, 60), cap(Codec::Av1, true, BIG, 60)];
+        let dec = [cap(Codec::H265, true, BIG, 60), cap(Codec::Av1, false, BIG, 60)];
+        let mut i = input(&enc, &dec, display(2560, 1600));
+        i.client_preferred = Some(Codec::Av1);
+        assert_eq!(negotiate(&i).unwrap().codec, Codec::Av1);
+        // Not available on the PC: automatic choice.
+        i.client_preferred = Some(Codec::H264);
+        assert_eq!(negotiate(&i).unwrap().codec, Codec::H265);
     }
 
     #[test]

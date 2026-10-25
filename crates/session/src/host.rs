@@ -68,9 +68,8 @@ enum SessionCommand {
 
 /// Why the stream is about to change.
 enum DisplayChange {
-    /// Another frame rate: only the encoder restarts.
-    FrameRate,
-    /// The tablet rotated or the user picked another resolution: apply a new plan.
+    /// The tablet rotated or the user picked another resolution or frame
+    /// rate: apply a new plan.
     Plan,
     /// The mode was changed outside SecondScrn (Windows display settings):
     /// follow it.
@@ -975,7 +974,7 @@ async fn stream(
     // --- Display
     let linger = Duration::from_secs(settings.display_linger_secs as u64);
     let platform = inner.platform.clone();
-    let plan = DisplayPlan::new(&native, scale);
+    let plan = display_plan(&native, scale, fps_cap);
     let lease = tokio::task::spawn_blocking(move || platform.acquire_display(&plan, linger))
         .await
         .map_err(|_| SessionError::Protocol("display task panicked"))?;
@@ -1098,7 +1097,7 @@ async fn stream(
                     ClientMessage::SetFrameRate { fps } => {
                         fps_cap = fps.clamp(10, 240);
                         inner.remember_fps(&fp, fps_cap);
-                        change = Some(DisplayChange::FrameRate);
+                        change = Some(DisplayChange::Plan);
                     }
                     ClientMessage::Goodbye => break Ok(false),
                     ClientMessage::SessionRequest { .. } | ClientMessage::SdpAnswer { .. } | ClientMessage::Hello { .. }
@@ -1181,7 +1180,7 @@ async fn stream(
                 }
                 Some(SessionCommand::SetFrameRate(f)) => {
                     fps_cap = f;
-                    change = Some(DisplayChange::FrameRate);
+                    change = Some(DisplayChange::Plan);
                 }
             },
             _ = ping.tick() => {
@@ -1207,9 +1206,8 @@ async fn stream(
         if let Some(change) = change {
             drop(pipeline);
             match change {
-                DisplayChange::FrameRate => {}
                 DisplayChange::Plan => {
-                    let plan = DisplayPlan::new(&native, scale);
+                    let plan = display_plan(&native, scale, fps_cap);
                     let mut l = lease;
                     let (l, r) = tokio::task::spawn_blocking(move || {
                         let r = l.reconfigure(&plan);
@@ -1277,6 +1275,17 @@ async fn stream(
     // display driver.
     let _ = tokio::task::spawn_blocking(move || drop(lease)).await;
     outcome.map(|_| ())
+}
+
+/// The monitor for `native` at `scale`, refreshing at the stream's frame rate
+/// when that is lower than the panel's: a 144 Hz monitor captured for a
+/// 120 fps stream drops every sixth frame, which shows as stutter.
+fn display_plan(native: &DisplayRequest, scale: u32, fps_cap: u32) -> DisplayPlan {
+    let mut plan = DisplayPlan::new(native, scale);
+    if (24..native.refresh_hz).contains(&fps_cap) {
+        plan.request.refresh_hz = fps_cap;
+    }
+    plan
 }
 
 /// True when the leased monitor no longer has the size being streamed (the

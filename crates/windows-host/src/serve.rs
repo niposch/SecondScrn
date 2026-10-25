@@ -77,7 +77,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 } else if let Some(sess) = &s.session {
                     let m = &sess.metrics;
                     line = format!(
-                        "{:?} {} {} {}x{} | cap {:.0} enc {:.0} fps {:.1} ms | {:.1} Mbit/s (est {:.1}) rtt {} loss {} | tx {} client {:.0} fps dec {:.0} ms q {} rx {} dec {} | kf {} nack {} pli {} drop {}+{} late {} cdrop {}",
+                        "{:?} {} {} {}x{} | cap {:.0} enc {:.0} fps {:.1} ms | {:.1} Mbit/s (est {:.1}) rtt {} loss {} | tx {} client {:.0} fps dec {:.0} ms q {} rx {} dec {} stut {} | kf {} nack {} pli {} drop {}+{} late {} cdrop {}",
                         sess.phase,
                         sess.device_name,
                         sess.stream.as_ref().map(|c| c.codec.to_string()).unwrap_or_default(),
@@ -96,6 +96,7 @@ pub fn run(args: &[String]) -> Result<()> {
                         m.client.map(|c| c.decode_queue_max).unwrap_or(0),
                         m.client.map(|c| c.frames_received).unwrap_or(0),
                         m.client.map(|c| c.frames_decoded).unwrap_or(0),
+                        m.client.map(|c| c.stutters).unwrap_or(0),
                         m.pipeline.keyframes,
                         m.nacks,
                         m.plis,
@@ -124,6 +125,20 @@ pub fn run(args: &[String]) -> Result<()> {
                 match engine.submit_pairing_pin(p.id, code.trim()) {
                     Ok(()) => println!("code submitted"),
                     Err(e) => println!("{e}"),
+                }
+            }
+            // Test controls: `<pin-file>.fps` / `.res` hold a frame rate or a
+            // resolution percentage for the connected tablet.
+            for (ext, set) in [
+                ("fps", &(|v| engine.set_frame_rate(v)) as &dyn Fn(u32) -> Result<(), _>),
+                ("res", &|v| engine.set_resolution(v)),
+            ] {
+                if let Ok(v) = std::fs::read_to_string(path.with_extension(ext)) {
+                    let _ = std::fs::remove_file(path.with_extension(ext));
+                    match v.trim().parse() {
+                        Ok(v) => println!("{ext} {v}: {:?}", set(v)),
+                        Err(e) => println!("{ext}: {e}"),
+                    }
                 }
             }
             if path.with_extension("quit").exists() {
