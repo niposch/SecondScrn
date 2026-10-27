@@ -46,9 +46,10 @@ The shared core is Rust; the apps use WinUI 3 (C#) and Jetpack Compose (Kotlin).
 1. From [Releases](https://github.com/niposch/SecondScrn/releases/latest),
    download and run **SecondScrn-win-Setup.exe** on the PC. This first release
    is not code-signed, so Windows may show a SmartScreen warning.
-2. Open **Display → Install driver…** in SecondScrn. This installs the
-   separately distributed Virtual Display Driver through winget, with an
-   administrator prompt. Allow SecondScrn through Windows Firewall when asked.
+2. Choose **Install driver…** on SecondScrn's Home page (also under
+   **Settings → Tablet monitor**). This installs the separately distributed
+   Virtual Display Driver through winget, with an administrator prompt. Allow
+   SecondScrn through Windows Firewall when asked.
 3. Install **SecondScrn-0.0.1-android.apk** on the tablet. Android will ask
    you to allow installation from the browser or file manager you use.
 4. Open the tablet app and select the PC. If discovery does not find it, use
@@ -69,9 +70,13 @@ the same release key.
 
 ## Presets
 
-Selecting a different preset sets resolution, frame rate and the bitrate
-policy together. Resolution and frame rate can still be adjusted afterwards
-and are remembered for the tablet. Frame rates are limited to the panel's capabilities.
+A preset sets resolution, frame rate and the bitrate policy together. Each
+tablet keeps its own preset, chosen on the PC's Home page, in the tray popup,
+on the Tablets page or on the tablet; **Settings → Default preset** applies
+to tablets without one. Resolution and frame rate can still be adjusted
+afterwards (the preset then shows as changed, with **Reset to preset**) and
+are remembered for the tablet. Frame rates are limited to the panel's
+capabilities and to **Settings → Highest frame rate**.
 
 | Preset | Resolution | Frame rate | Use |
 |---|---|---|---|
@@ -81,8 +86,11 @@ and are remembered for the tablet. Frame rates are limited to the panel's capabi
 | Weak Wi-Fi | 67 % | Up to 30 fps | Lower network and decoding load |
 
 Performance hints wait ten seconds after startup, reconnection or a stream
-change and require repeated evidence. They recommend adjustments; they do
-not change your selected resolution or frame rate.
+change and require repeated evidence. When the network can't carry the
+chosen resolution and frame rate for a few seconds, both apps say so. Hints
+recommend adjustments; they never change your selected resolution or frame
+rate. The bitrate adapts to the network on its own, keeping the picture
+recent rather than letting frames queue up.
 
 ## Limitations and troubleshooting
 
@@ -100,8 +108,14 @@ not change your selected resolution or frame rate.
 * If the tablet cannot connect, check Windows Firewall and network isolation.
   For stuttering, close other screen-sharing tools (including scrcpy), then
   try the Smooth or Weak Wi-Fi preset.
-* Windows updates use the GitHub release feed. Android updates are installed
-  manually from Releases. Driver installation and updates are separate.
+* Until version 1.0 the PC and tablet apps must run the **same version**.
+  The PC app checks the GitHub release feed and installs updates only when
+  you choose to; install the tablet app of the same version from Releases at
+  the same time. If the versions differ, both apps name the exact version the
+  older side needs. Driver installation and updates are separate.
+* With an integrated and a dedicated GPU, SecondScrn encodes on the GPU
+  Windows runs it on (**Settings → Advanced → Encode on**: Automatic). The
+  choice there, or Windows' own graphics setting, overrides it.
 
 When reporting an issue, include app versions, GPU, tablet model, Android
 version, codec, resolution/frame rate and network setup. The Diagnostics page

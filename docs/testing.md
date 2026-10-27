@@ -60,8 +60,8 @@ standard and access point for each run:
 | Item | Procedure | Pass criteria |
 |---|---|---|
 | Hardware decoding | Troubleshooting card lists decoders; logcat `decoder started` | HEVC (or AV1) vendor decoder (not `c2.android.*`) |
-| Codecs | force each codec in PC Streaming settings | each listed codec streams |
-| Native resolution | compare PC Display settings with tablet panel | identical; text pixel-sharp at 100% zoom |
+| Codecs | force each codec in PC Settings → Advanced → Video codec | each listed codec streams |
+| Native resolution | compare Windows display settings with tablet panel | identical; text pixel-sharp at 100% zoom |
 | Text clarity | open `docs/test-pattern.html` on the tablet monitor | 1-px black/white lines distinct; red/blue lines legible |
 | Colour | test pattern colour bars vs. same pattern on a calibrated monitor | no visible shift; greys neutral; black 0/white 255 (no washed-out range error) |
 | Smoothness | play 60 fps video, drag windows | ≥ 55 fps rendered (overlay), no stutter > 100 ms |
@@ -71,6 +71,22 @@ standard and access point for each run:
 | Thermal | 30 min video | no throttling warnings, fps stable |
 | Sleep/resume | tablet screen off 30 s / 5 min; PC sleep | reconnects automatically |
 | Surface lifecycle | rotate, split-screen, home → back | stream recovers within 1 s |
+
+## Latency under network trouble
+
+`crates/session/tests/latency.rs` runs both engines over loopback with fake
+media whose frames are as large as the bitrate target allows and carry their
+capture time, and a simulated bottleneck on the PC's media path. It checks
+latency (capture to decode), the longest time without a new picture and the
+bitrate in five scenarios: a link dropping from 8 to 3 Mbit/s behind a 1 s
+buffer and recovering, 200 ms outages every 1.5 s, decoder stalls (with
+reference recovery and with keyframes) and a link too slow for the chosen
+quality (the warning on both apps). Set `SHOW_GAPS=1` to list every pause
+longer than 150 ms with its time.
+
+`secondscrn-host-cli ltr-check` verifies long-term reference recovery per
+encoder: it drops frames from an encoded stream, recovers from a reference
+and compares the decoded pictures with ffmpeg.
 
 ## Network impairment
 

@@ -1,0 +1,48 @@
+# SecondScrn 0.0.2 (draft)
+
+Lower latency on busy or unreliable Wi-Fi, fewer freezes, a reorganised
+Windows app, and versions that are updated in lockstep.
+
+**Update both apps.** Until 1.0 the PC and tablet apps only work together at
+the same version. Tablets still on 0.0.1 show "the host and tablet app
+versions are incompatible" against a 0.0.2 PC: install the 0.0.2 APK. From
+0.0.2 on, a version mismatch names the exact version the older side needs.
+
+## Downloads
+
+* **SecondScrn-win-Setup.exe** — Windows 11 x64 installer.
+* **SecondScrn-win-Portable.zip** — portable Windows app.
+* **SecondScrn-0.0.2-android.apk** — signed Android 10+ APK (arm64-v8a and x86_64).
+* **SHA256SUMS.txt** — checksums for the binary assets.
+
+## Changes
+
+* **Latency stays low when the network struggles.** The tablet reports when
+  each frame arrived; the PC lowers the bitrate within about 100 ms of frames
+  starting to queue, never queues frames that could only arrive late, and
+  retransmits only what can still arrive in time. In a simulated link drop
+  from 8 to 3 Mbit/s, latency settled at ~35 ms instead of ~1 s, with no
+  freeze; quality recovers fully once the link clears.
+* **Fewer freezes after loss.** With NVIDIA H.264 and AV1 encoding, a loss is
+  recovered with one small frame from a reference picture the tablet
+  confirmed instead of a large keyframe. HEVC and other encoders recover with
+  keyframes as before.
+* **Warning when the network is too slow** for the chosen resolution and
+  frame rate, on both apps. Nothing changes automatically.
+* **Encoder GPU: Automatic** by default — the GPU Windows runs SecondScrn on
+  (the screens' GPU on desktops, the power-saving one on laptops).
+* **Windows app reorganised:** Home (connection, the tablet's preset,
+  resolution and frame rate, statistics), Tablets, Settings (quality
+  defaults, tablet monitor, app, network, Advanced) and Diagnostics (encoders,
+  performance test, logs). Presets belong to each tablet; changing
+  resolution or frame rate shows the preset as changed, with Reset to preset.
+  One frame-rate limit applies to every preset; Weak Wi-Fi's frame rate is a
+  default, no longer a hidden cap.
+* Frame rates update every 250 ms and show what the tablet displays;
+  statistics use fixed-width digits.
+
+## Tested and known limitations
+
+Tested on Windows 11 / NVIDIA RTX 4080 SUPER and Xiaomi Pad 7 Pro. Recovery
+frames on the tablet's decoder over real Wi-Fi, hybrid-GPU laptops and AMD/Intel
+encoders still need validation. See [status](status.md).

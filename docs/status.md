@@ -1,6 +1,26 @@
 # Status, known limitations and roadmap
 
-Version 0.0.1 — first public release.
+Version 0.0.2 (in preparation). See the [release notes](release-notes-0.0.2.md).
+
+## 0.0.2 changes and validation
+
+* **Latency-target bitrate control** from per-frame arrival reports (50 ms),
+  capture skipping instead of late frames, age-limited retransmission.
+  Verified with `session/tests/latency.rs` (simulated bottleneck, outages,
+  decoder stalls) and a 3-minute recorded session on the physical tablet
+  (queueing delay 1–5 ms, no cuts, skips or losses).
+* **Loss recovery from long-term references** for NVIDIA H.264 and AV1
+  (`ltr-check`: pictures identical after recovery). NVIDIA HEVC, the default
+  codec, ignores the request and keeps keyframe recovery. Recovery frames on
+  the tablet's decoder over real Wi-Fi are not yet verified.
+* **Lockstep versions** before 1.0, with exact-version guidance on mismatch
+  (engine test in both directions).
+* **Encoder GPU: Automatic** (the GPU Windows runs SecondScrn on); GPUs
+  classified by unified memory. Verified on a desktop (RTX 4080 SUPER with
+  an AMD iGPU); hybrid laptops not yet verified.
+* **App rework:** per-tablet presets, one frame-rate limit, Home / Tablets /
+  Settings / Diagnostics pages, frame rates updated every 250 ms, fixed-width
+  statistics.
 
 ## Release validation (2026-10-25)
 
@@ -52,7 +72,7 @@ keyframe recovery after burst loss.
 ### Resolution, frame rate, touch and pen (0.1, second pass)
 
 * The stream resolution can be changed from the tablet overlay, the PC app
-  (Display page, tray popup) and the Windows display settings. Offered sizes
+  (Home page and tray popup since 0.0.2) and the Windows display settings. Offered sizes
   are 100/85/75/67/50 % of the panel, keeping its aspect ratio; any other mode
   picked in Windows is followed (letterboxed on the tablet). The choice is
   remembered per tablet and kept across rotations.
