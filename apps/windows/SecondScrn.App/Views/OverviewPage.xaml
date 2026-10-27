@@ -5,10 +5,21 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <ScrollViewer>
         <StackPanel Padding="32,24" Spacing="12" MaxWidth="1000" HorizontalAlignment="Stretch">
-            <TextBlock Text="Overview" Style="{StaticResource PageTitle}" />
+            <TextBlock Text="Home" Style="{StaticResource PageTitle}" />
 
             <InfoBar IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}" Severity="Warning" Title="Attention"
                      Message="{x:Bind ViewModel.LastError, Mode=OneWay}" IsClosable="False" />
+            <InfoBar IsOpen="{x:Bind ViewModel.HasVersionMismatch, Mode=OneWay}" Severity="Warning" IsClosable="False"
+                     Title="Different SecondScrn versions" Message="{x:Bind ViewModel.VersionMismatchText, Mode=OneWay}">
+                <InfoBar.Content>
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,12">
+                        <Button Content="{x:Bind ViewModel.InstallTabletVersionLabel, Mode=OneWay}"
+                                Visibility="{x:Bind ViewModel.InstallTabletVersionVisibility, Mode=OneWay}" Click="OnInstallTabletVersion" />
+                        <HyperlinkButton Content="{x:Bind ViewModel.TabletAppLabel, Mode=OneWay}"
+                                         Visibility="{x:Bind ViewModel.TabletAppLinkVisibility, Mode=OneWay}" Click="OnTabletApp" />
+                    </StackPanel>
+                </InfoBar.Content>
+            </InfoBar>
             <InfoBar IsOpen="{x:Bind ViewModel.DriverNeedsInstall, Mode=OneWay}" Severity="Error"
                      Title="{x:Bind ViewModel.DriverTitle, Mode=OneWay}"
                      Message="The tablet appears as a real monitor through the Virtual Display Driver. Installing it requires administrator approval once.">
@@ -35,6 +46,37 @@
                 </Grid>
             </Border>
 
+            <!-- The connected tablet's picture: remembered for that tablet. -->
+            <Border Style="{StaticResource Card}" Visibility="{x:Bind ViewModel.ConnectedVisibility, Mode=OneWay}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Picture" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <InfoBar IsOpen="{x:Bind ViewModel.NetworkLimited, Mode=OneWay}" IsClosable="False" Severity="Warning"
+                             Title="Network too slow for this quality" Message="{x:Bind ViewModel.NetworkLimitedText, Mode=OneWay}" />
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Header="Preset" ItemsSource="{x:Bind ViewModel.Presets}"
+                                  SelectedIndex="{x:Bind ViewModel.PresetIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+                        <ComboBox Grid.Column="1" Header="Resolution" ItemsSource="{x:Bind ViewModel.ResolutionLabels, Mode=OneWay}"
+                                  SelectedIndex="{x:Bind ViewModel.ResolutionIndex, Mode=TwoWay}" HorizontalAlignment="Stretch"
+                                  IsEnabled="{x:Bind ViewModel.CanChangeResolution, Mode=OneWay}" />
+                        <ComboBox Grid.Column="2" Header="Frame rate" ItemsSource="{x:Bind ViewModel.FrameRateLabels, Mode=OneWay}"
+                                  SelectedIndex="{x:Bind ViewModel.FrameRateIndex, Mode=TwoWay}" HorizontalAlignment="Stretch"
+                                  IsEnabled="{x:Bind ViewModel.CanChangeResolution, Mode=OneWay}" />
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="4" Visibility="{x:Bind ViewModel.PresetChangedVisibility, Mode=OneWay}">
+                        <TextBlock Text="{x:Bind ViewModel.PresetChangedText, Mode=OneWay}" VerticalAlignment="Center" />
+                        <HyperlinkButton Content="Reset to preset" Click="OnResetPreset" />
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.PresetHint, Mode=OneWay}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                    <TextBlock Text="{x:Bind ViewModel.ResolutionHint, Mode=OneWay}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                    <Button Content="Arrange displays and set scaling in Windows…" Click="OnDisplaySettings" />
+                </StackPanel>
+            </Border>
+
             <Grid ColumnSpacing="12" RowSpacing="12" Visibility="{x:Bind ViewModel.ConnectedVisibility, Mode=OneWay}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -46,38 +88,29 @@
                     <RowDefinition />
                 </Grid.RowDefinitions>
                 <Border Style="{StaticResource Card}">
-                    <StackPanel><TextBlock Text="Resolution" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.ResolutionText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" /></StackPanel>
+                    <StackPanel><TextBlock Text="Resolution" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.ResolutionText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular" /></StackPanel>
                 </Border>
                 <Border Grid.Column="1" Style="{StaticResource Card}">
-                    <StackPanel><TextBlock Text="Frame rate" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.FpsText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" /></StackPanel>
+                    <StackPanel><TextBlock Text="Frame rate" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.FpsText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular" /><TextBlock Text="{x:Bind ViewModel.FpsDetail, Mode=OneWay}" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular" /></StackPanel>
                 </Border>
                 <Border Grid.Column="2" Style="{StaticResource Card}">
-                    <StackPanel><TextBlock Text="Bitrate" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.BitrateText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" /></StackPanel>
+                    <StackPanel><TextBlock Text="Bitrate" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.BitrateText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular" /><TextBlock Text="{x:Bind ViewModel.BitrateDetail, Mode=OneWay}" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular" /></StackPanel>
                 </Border>
                 <Border Grid.Row="1" Style="{StaticResource Card}">
-                    <StackPanel><TextBlock Text="Latency" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.LatencyText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" /></StackPanel>
+                    <StackPanel><TextBlock Text="Latency (round trip)" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.LatencyText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular" /></StackPanel>
                 </Border>
                 <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}">
-                    <StackPanel><TextBlock Text="Packet loss (before repair)" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.LossText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" /></StackPanel>
+                    <StackPanel><TextBlock Text="Packet loss (before repair)" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.LossText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" TextTrimming="CharacterEllipsis" Typography.NumeralAlignment="Tabular" /></StackPanel>
                 </Border>
                 <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource Card}">
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="Preset" Style="{StaticResource Caption}" />
-                        <ComboBox ItemsSource="{x:Bind ViewModel.Presets}" SelectedIndex="{x:Bind ViewModel.PresetIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" />
-                    </StackPanel>
+                    <StackPanel><TextBlock Text="Codec" Style="{StaticResource Caption}" /><TextBlock Text="{x:Bind ViewModel.CodecText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}" /></StackPanel>
                 </Border>
             </Grid>
 
-            <Border Style="{StaticResource Card}">
-                <StackPanel Spacing="8">
-                    <TextBlock Text="Quick actions" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button Content="Arrange displays in Windows…" Click="OnDisplaySettings" />
-                        <Button Content="Show connection details" Click="OnDiagnostics" />
-                    </StackPanel>
-                    <TextBlock Text="{x:Bind ViewModel.HostIdentity, Mode=OneWay}" Style="{StaticResource Caption}" />
-                </StackPanel>
-            </Border>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <HyperlinkButton Content="Connection details" Click="OnDiagnostics" />
+                <TextBlock Text="{x:Bind ViewModel.HostIdentity, Mode=OneWay}" Style="{StaticResource Caption}" VerticalAlignment="Center" />
+            </StackPanel>
         </StackPanel>
     </ScrollViewer>
 </Page>

@@ -192,6 +192,23 @@ pub struct EncodedOutput {
     pub time_100ns: i64,
 }
 
+/// Long-term reference frames: recovery from loss without a keyframe. The
+/// encoder keeps this many marked pictures; after a loss the next frame
+/// predicts only from one the receiver confirmed, so it decodes although
+/// the frames in between never arrived.
+pub const LTR_SLOTS: u32 = 2;
+
+/// What a frame does with the long-term references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reference {
+    #[default]
+    None,
+    /// Keep this picture in slot `n`.
+    Mark(u32),
+    /// Predict only from the picture in slot `n` (recovery after a loss).
+    Recover(u32),
+}
+
 pub struct Encoder {
     transform: IMFTransform,
     /// Shut down on drop: otherwise the next `ActivateObject` on the same
@@ -203,6 +220,8 @@ pub struct Encoder {
     /// Reused output sample for encoders that don't provide their own (the
     /// data is copied out before the next frame).
     output_sample: Option<(IMFSample, IMFMediaBuffer)>,
+    /// The encoder accepted the long-term reference configuration.
+    ltr: bool,
     headers: Vec<u8>,
     event_thread: Option<std::thread::JoinHandle<()>>,
     _device_manager: IMFDXGIDeviceManager,
@@ -267,6 +286,12 @@ impl Encoder {
         // VBV of ~2 frames keeps big updates from bursting the network.
         let vbv = (settings.bitrate_bps / settings.fps.max(1) as u64 * 2).min(u32::MAX as u64) as u32;
         set(&CODECAPI_AVEncCommonBufferSize, variant_u32(vbv), "vbv");
+        // Long-term references (slots; trust mode 1: marked pictures may be
+        // referenced as soon as the encoder is told to).
+        let ltr = std::env::var_os("SECONDSCRN_NO_LTR").is_none()
+            && unsafe { codec_api.SetValue(&CODECAPI_AVEncVideoLTRBufferControl, &variant_u32(LTR_SLOTS | (1 << 16))) }
+                .inspect_err(|e| tracing::debug!(error = %e, "long-term references not supported"))
+                .is_ok();
 
         let out_type = unsafe { MFCreateMediaType() }?;
         let in_type = unsafe { MFCreateMediaType() }?;
@@ -367,10 +392,31 @@ impl Encoder {
             name: desc.name.clone(),
             settings,
             output_sample,
+            ltr,
             headers,
             event_thread: Some(event_thread),
             _device_manager: manager,
         })
+    }
+
+    /// Which optional encoder controls this encoder supports (diagnostics).
+    pub fn supported_controls(&self) -> Vec<(&'static str, bool)> {
+        [
+            ("long-term reference buffer", &CODECAPI_AVEncVideoLTRBufferControl),
+            ("mark long-term reference", &CODECAPI_AVEncVideoMarkLTRFrame),
+            ("use long-term reference", &CODECAPI_AVEncVideoUseLTRFrame),
+            ("gradual intra refresh", &CODECAPI_AVEncVideoGradualIntraRefresh),
+            ("max reference frames", &CODECAPI_AVEncVideoMaxNumRefFrame),
+            ("max QP", &CODECAPI_AVEncVideoMaxQP),
+            ("per-frame QP", &CODECAPI_AVEncVideoEncodeFrameTypeQP),
+            ("max bitrate", &CODECAPI_AVEncCommonMaxBitRate),
+            ("VBV buffer size", &CODECAPI_AVEncCommonBufferSize),
+            ("slice control", &CODECAPI_AVEncSliceControlMode),
+            ("temporal layers", &CODECAPI_AVEncVideoTemporalLayerCount),
+        ]
+        .into_iter()
+        .map(|(name, guid)| (name, unsafe { self.codec_api.IsSupported(guid) }.is_ok()))
+        .collect()
     }
 
     pub fn set_bitrate(&mut self, bps: u64) {
@@ -382,10 +428,43 @@ impl Encoder {
     }
 
     /// Submits an NV12 texture. Only call after a `NeedInput` event.
-    pub fn encode(&mut self, texture: &ID3D11Texture2D, time_100ns: i64, keyframe: bool) -> Result<()> {
+    /// Whether this encoder recovers from loss with long-term references.
+    pub fn supports_ltr(&self) -> bool {
+        self.ltr
+    }
+
+    /// Long-term reference recovery verified to produce decodable frames
+    /// (`secondscrn-host-cli ltr-check`): NVIDIA's H.264 and AV1 encoders.
+    /// NVIDIA's HEVC encoder accepts the settings but keeps predicting from
+    /// the previous frame; other vendors are untested. Elsewhere losses are
+    /// recovered with keyframes.
+    pub fn verified_ltr(&self, desc: &EncoderDescriptor) -> bool {
+        self.ltr && desc.name.contains("NVIDIA") && matches!(desc.codec, Codec::H264 | Codec::Av1)
+    }
+
+    pub fn encode(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        time_100ns: i64,
+        keyframe: bool,
+        reference: Reference,
+    ) -> Result<()> {
         unsafe {
             if keyframe {
                 let _ = self.codec_api.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &variant_u32(1));
+            }
+            match reference {
+                _ if !self.ltr => {}
+                Reference::None => {}
+                Reference::Mark(slot) => {
+                    self.codec_api.SetValue(&CODECAPI_AVEncVideoMarkLTRFrame, &variant_u32(slot)).context("mark LTR")?
+                }
+                // Bitmap of allowed slots; bit 16: only those (no short-term
+                // references, which the receiver may have lost).
+                Reference::Recover(slot) => self
+                    .codec_api
+                    .SetValue(&CODECAPI_AVEncVideoUseLTRFrame, &variant_u32((1 << slot) | (1 << 16)))
+                    .context("use LTR")?,
             }
             let buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, texture, 0, false)?;
             if let Ok(b2) = buffer.cast::<IMF2DBuffer>() {
@@ -548,7 +627,11 @@ fn try_encoder(desc: &EncoderDescriptor) -> Result<CodecCapability> {
 /// Verifies which codecs work on which GPU by actually configuring each
 /// GPU's encoders; advertised-but-broken encoders are excluded. Per codec the
 /// encoder on a `prefer` GPU is selected, any other working one otherwise.
-pub fn probe(prefer: EncoderGpu) -> Inventory {
+/// Without a preference, the GPU Windows runs this process on is preferred:
+/// the frames are composed there, and on hybrid laptops it is the only GPU
+/// whose encoder starts anyway.
+pub fn probe(prefer: Option<EncoderGpu>) -> Inventory {
+    let default_luid = d3d::default_adapter().map(d3d::luid_to_u64);
     let mut inv = Inventory::default();
     let mut working: Vec<(CodecCapability, EncoderDescriptor)> = Vec::new();
     for codec in Codec::ALL {
@@ -588,7 +671,10 @@ pub fn probe(prefer: EncoderGpu) -> Inventory {
     }
     for codec in Codec::ALL {
         let mut candidates = working.iter().filter(|(c, _)| c.codec == codec);
-        let preferred = candidates.clone().find(|(_, d)| d.kind == prefer);
+        let preferred = candidates.clone().find(|(_, d)| match prefer {
+            Some(kind) => d.kind == kind,
+            None => d.luid.map(d3d::luid_to_u64) == default_luid,
+        });
         if let Some(choice) = preferred.or_else(|| candidates.next()) {
             inv.selected.push(choice.clone());
         }

@@ -14,9 +14,35 @@ use serde::{Deserialize, Serialize};
 pub mod framing;
 
 /// Bumped on incompatible protocol changes.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 /// Default TCP port of the host's control listener.
 pub const DEFAULT_CONTROL_PORT: u16 = 47800;
+
+/// Whether apps of these versions (app version, protocol version) work
+/// together. Before 1.0 the PC and tablet apps are updated in lockstep: only
+/// the identical version is compatible. From 1.0 the protocol decides.
+pub fn versions_compatible(a: (&str, u32), b: (&str, u32)) -> bool {
+    let pre_release = |v: &str| v.split('.').next().and_then(|m| m.trim().parse::<u32>().ok()).is_none_or(|m| m == 0);
+    a.1 == b.1 && (a.0 == b.0 || !(pre_release(a.0) || pre_release(b.0)))
+}
+
+/// Orders `major.minor.patch` versions (any suffix ignored); `None` when one
+/// doesn't parse.
+pub fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let parse = |v: &str| -> Option<Vec<u64>> {
+        let core = v.split(['-', '+']).next()?;
+        core.split('.').map(|p| p.trim().parse().ok()).collect()
+    };
+    Some(parse(a)?.cmp(&parse(b)?))
+}
+
+/// Where the published release of `version` is (GitHub release assets).
+pub const RELEASES_URL: &str = "https://github.com/niposch/SecondScrn/releases";
+
+/// The Android app of exactly this version.
+pub fn android_apk_url(version: &str) -> String {
+    format!("{RELEASES_URL}/download/v{version}/SecondScrn-{version}-android.apk")
+}
 /// mDNS / DNS-SD service type announced by hosts.
 pub const MDNS_SERVICE_TYPE: &str = "_secondscrn._tcp.local.";
 /// ALPN identifier used on the TLS control channel.
@@ -367,6 +393,17 @@ impl InputEvent {
     }
 }
 
+/// When one frame was complete on the tablet: the PC's latency feedback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameTiming {
+    /// RTP media time (90 kHz) of the frame, i.e. its capture time on the PC.
+    pub rtp_time: u64,
+    /// When its last packet arrived, in µs on the tablet's monotonic clock
+    /// (arbitrary origin, fixed during a session).
+    pub arrival_us: u64,
+    pub bytes: u32,
+}
+
 /// Periodic receiver-side statistics (about once per second).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct ClientStats {
@@ -391,6 +428,9 @@ pub struct ClientStats {
 pub enum RejectReason {
     /// Protocol versions are incompatible.
     IncompatibleVersion,
+    /// The app versions differ (before 1.0 they must match exactly). The
+    /// host's hello, sent first, carries its version.
+    VersionMismatch,
     /// The client is not (or no longer) paired. It must pair again.
     NotPaired,
     /// The host user declined the pairing request or entered a wrong PIN.
@@ -411,6 +451,7 @@ impl std::fmt::Display for RejectReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             RejectReason::IncompatibleVersion => "the host and tablet app versions are incompatible",
+            RejectReason::VersionMismatch => "the PC and tablet run different SecondScrn versions",
             RejectReason::NotPaired => "this tablet is not paired with the host",
             RejectReason::PairingDeclined => "pairing was declined or the code was wrong",
             RejectReason::PairingBusy => "the host is busy with another pairing request",
@@ -456,6 +497,17 @@ pub enum ClientMessage {
     RequestKeyframe,
     Stats {
         stats: ClientStats,
+    },
+    /// Frames received since the previous report (every ~50 ms while frames
+    /// arrive): lets the PC see queueing on the network within a fraction of
+    /// a second.
+    FrameTimings {
+        frames: Vec<FrameTiming>,
+        /// RTP times of the first and the latest frame decoded since the
+        /// last loss (all with intact references): long-term references in
+        /// this range are known to be on the tablet.
+        #[serde(default)]
+        intact: Option<(u64, u64)>,
     },
     /// The tablet rotated or its usable area changed.
     DisplayChanged {
@@ -535,6 +587,16 @@ pub enum HostMessage {
     Pong {
         nonce: u64,
     },
+    /// The network can't carry the stream at the chosen resolution and frame
+    /// rate (fewer frames are sent); repeated while it lasts.
+    NetworkLimited {
+        limited: bool,
+    },
+    /// The frame with this RTP time predicts only from a reference picture
+    /// the tablet confirmed: it decodes after a loss, without a keyframe.
+    Recovery {
+        rtp_time: u64,
+    },
     /// The host ends the session. With `reconnect` the tablet should retry
     /// (host app restarting/updating); otherwise the user ended it.
     Goodbye {
@@ -572,6 +634,24 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let back: HostMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, back, "{json}");
+    }
+
+    #[test]
+    fn pre_release_versions_must_match_exactly() {
+        assert!(versions_compatible(("0.0.2", 3), ("0.0.2", 3)));
+        assert!(!versions_compatible(("0.0.2", 3), ("0.0.3", 3)));
+        assert!(!versions_compatible(("0.0.2", 3), ("0.0.2", 4)));
+        assert!(!versions_compatible(("0.9.0", 3), ("1.0.0", 3)));
+        assert!(versions_compatible(("1.0.0", 3), ("1.2.0", 3)));
+        assert!(!versions_compatible(("1.0.0", 3), ("1.2.0", 4)));
+        assert!(versions_compatible(("test", 3), ("test", 3)));
+        assert_eq!(compare_versions("0.0.2", "0.0.10"), Some(std::cmp::Ordering::Less));
+        assert_eq!(compare_versions("0.1.0-beta", "0.1.0"), Some(std::cmp::Ordering::Equal));
+        assert_eq!(compare_versions("test", "0.1.0"), None);
+        assert_eq!(
+            android_apk_url("0.0.2"),
+            "https://github.com/niposch/SecondScrn/releases/download/v0.0.2/SecondScrn-0.0.2-android.apk"
+        );
     }
 
     #[test]
@@ -636,6 +716,10 @@ mod tests {
         roundtrip_client(ClientMessage::SetFrameRate { fps: 90 });
         roundtrip_client(ClientMessage::SetUiScale { percent: 175 });
         roundtrip_client(ClientMessage::Stats { stats: ClientStats::default() });
+        roundtrip_client(ClientMessage::FrameTimings {
+            frames: vec![FrameTiming { rtp_time: 9000, arrival_us: 123_456, bytes: 4000 }],
+            intact: Some((0, 9000)),
+        });
         roundtrip_client(ClientMessage::Goodbye);
     }
 

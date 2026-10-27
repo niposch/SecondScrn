@@ -18,12 +18,11 @@ pub enum Theme {
     Dark,
 }
 
-/// Which GPU encodes the stream on PCs with more than one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// A kind of GPU, on PCs with more than one: which one encodes the stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EncoderGpu {
     /// The processor's graphics: uses less power (longer battery life).
-    #[default]
     Integrated,
     /// A dedicated graphics card: more headroom for high resolutions and
     /// frame rates, at the cost of power.
@@ -40,7 +39,7 @@ pub struct DevicePreferences {
     pub allow_auto_reconnect: bool,
     /// Stream resolution as a percentage of the panel; `None` = native.
     pub resolution_scale: Option<u32>,
-    /// Frame rate for this tablet; `None` = the global `max_fps`.
+    /// Frame rate for this tablet; `None` = its preset's.
     pub max_fps: Option<u32>,
 }
 
@@ -68,8 +67,12 @@ pub struct HostSettings {
     pub preset: QualityPreset,
     /// Force a codec instead of automatic negotiation.
     pub preferred_codec: Option<Codec>,
-    pub encoder_gpu: EncoderGpu,
-    pub max_fps: u32,
+    /// The GPU that encodes; `None`: the one Windows runs SecondScrn on (the
+    /// screens' GPU on desktops, the power-saving one on laptops).
+    pub encoder_gpu_choice: Option<EncoderGpu>,
+    /// Highest frame rate of any stream, whatever the preset or the tablet's
+    /// choice; `None`: only the tablet's display limits it.
+    pub fps_limit: Option<u32>,
     /// Upper bitrate bound in Mbit/s; 0 = automatic.
     pub max_bitrate_mbps: u32,
     /// Keep the virtual monitor attached this long after a tablet drops, so
@@ -94,8 +97,8 @@ impl Default for HostSettings {
             discoverable: true,
             preset: QualityPreset::Automatic,
             preferred_codec: None,
-            encoder_gpu: EncoderGpu::Integrated,
-            max_fps: 60,
+            encoder_gpu_choice: None,
+            fps_limit: None,
             max_bitrate_mbps: 0,
             display_linger_secs: 30,
             devices: BTreeMap::new(),
@@ -121,7 +124,7 @@ impl HostSettings {
 
     /// Clamps values a hand-edited file could make unusable.
     pub fn sanitized(mut self) -> Self {
-        self.max_fps = self.max_fps.clamp(10, 240);
+        self.fps_limit = self.fps_limit.map(|f| f.clamp(10, 240));
         self.display_linger_secs = self.display_linger_secs.min(600);
         if self.control_port == 0 {
             self.control_port = DEFAULT_CONTROL_PORT;
@@ -234,7 +237,7 @@ mod tests {
         let loaded: HostSettings = load(&path);
         assert_eq!(loaded, HostSettings::default());
 
-        let mut s = HostSettings { preset: QualityPreset::Sharp, max_fps: 30, ..Default::default() };
+        let mut s = HostSettings { preset: QualityPreset::Sharp, fps_limit: Some(30), ..Default::default() };
         s.devices.insert(
             "ab".into(),
             DevicePreferences {
@@ -253,8 +256,8 @@ mod tests {
 
     #[test]
     fn missing_fields_use_defaults() {
-        let s: HostSettings = serde_json::from_str(r#"{"max_fps": 30}"#).unwrap();
-        assert_eq!(s.max_fps, 30);
+        let s: HostSettings = serde_json::from_str(r#"{"fps_limit": 30}"#).unwrap();
+        assert_eq!(s.fps_limit, Some(30));
         assert_eq!(s.control_port, DEFAULT_CONTROL_PORT);
         assert!(s.close_to_tray);
     }
@@ -271,8 +274,8 @@ mod tests {
 
     #[test]
     fn sanitize_clamps() {
-        let s = HostSettings { max_fps: 1000, control_port: 0, ..Default::default() }.sanitized();
-        assert_eq!(s.max_fps, 240);
+        let s = HostSettings { fps_limit: Some(1000), control_port: 0, ..Default::default() }.sanitized();
+        assert_eq!(s.fps_limit, Some(240));
         assert_eq!(s.control_port, DEFAULT_CONTROL_PORT);
     }
 

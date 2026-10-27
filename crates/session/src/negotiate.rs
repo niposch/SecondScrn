@@ -77,12 +77,13 @@ pub fn negotiate(input: &NegotiationInput<'_>) -> Result<StreamConfig, Negotiati
     }
     let (_, enc, dec) = best.ok_or(NegotiationError::NoCommonCodec(w, h))?;
 
-    let max_fps =
-        [input.display.refresh_hz.max(1), enc.max_fps, dec.max_fps, input.host_max_fps, input.preset.fps_cap()]
-            .into_iter()
-            .filter(|v| *v > 0)
-            .min()
-            .unwrap_or(60);
+    // A preset's frame rate is only its default (`host_max_fps` carries the
+    // chosen one): a frame rate picked afterwards is honoured.
+    let max_fps = [input.display.refresh_hz.max(1), enc.max_fps, dec.max_fps, input.host_max_fps]
+        .into_iter()
+        .filter(|v| *v > 0)
+        .min()
+        .unwrap_or(60);
     let policy = BitratePolicy::for_stream(enc.codec, w, h, max_fps, input.preset, None);
 
     Ok(StreamConfig {
@@ -95,19 +96,6 @@ pub fn negotiate(input: &NegotiationInput<'_>) -> Result<StreamConfig, Negotiati
         encoder: enc.implementation.clone(),
         scale_percent: 100,
     })
-}
-
-trait PresetExt {
-    fn fps_cap(self) -> u32;
-}
-
-impl PresetExt for QualityPreset {
-    fn fps_cap(self) -> u32 {
-        match self {
-            QualityPreset::LowBandwidth => 30,
-            _ => 240,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -207,8 +195,9 @@ mod tests {
         let mut i = input(&enc, &dec, d);
         i.host_max_fps = 90;
         assert_eq!(negotiate(&i).unwrap().max_fps, 90);
+        // The preset doesn't cap it: its frame rate arrives as `host_max_fps`.
         i.preset = QualityPreset::LowBandwidth;
-        assert_eq!(negotiate(&i).unwrap().max_fps, 30);
+        assert_eq!(negotiate(&i).unwrap().max_fps, 90);
     }
 
     #[test]

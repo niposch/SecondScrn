@@ -310,6 +310,53 @@ async fn presets_set_resolution_and_frame_rate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pc_presets_are_the_tablets_and_show_custom_changes() {
+    use secondscrn_protocol::QualityPreset::{LowBandwidth, Smooth};
+    let r = rig().await;
+    streaming(&r).await;
+    let mut hs = r.host.subscribe();
+    let session = |s: &HostSnapshot| {
+        s.session.as_ref().map(|x| (x.preset, x.custom, x.stream.as_ref().map(|c| (c.scale_percent, c.max_fps))))
+    };
+    r.host.set_session_preset(LowBandwidth).unwrap();
+    wait(&mut hs, 10, "weak wi-fi", |s: &HostSnapshot| session(s) == Some((LowBandwidth, false, Some((67, 30))))).await;
+    let snap = r.host.snapshot();
+    assert_eq!(snap.paired_devices[0].preferences.preset, Some(LowBandwidth));
+    assert_eq!(snap.settings.preset, secondscrn_protocol::QualityPreset::Automatic, "the default is unchanged");
+
+    r.host.set_frame_rate(60).unwrap();
+    wait(&mut hs, 10, "custom", |s: &HostSnapshot| session(s) == Some((LowBandwidth, true, Some((67, 60))))).await;
+    // The default preset does not override the tablet's own.
+    r.host.set_preset(Smooth);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(session(&r.host.snapshot()), Some((LowBandwidth, true, Some((67, 60)))));
+    // Choosing the preset again undoes the change.
+    r.host.set_session_preset(LowBandwidth).unwrap();
+    wait(&mut hs, 10, "preset again", |s: &HostSnapshot| session(s) == Some((LowBandwidth, false, Some((67, 30)))))
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn frame_rate_limit_applies_to_every_preset() {
+    let r = rig().await;
+    streaming(&r).await;
+    let mut hs = r.host.subscribe();
+    let mut settings = r.host.snapshot().settings;
+    settings.fps_limit = Some(30);
+    r.host.update_settings(settings);
+    r.host.reconnect();
+    wait(&mut hs, 15, "limited stream", |s: &HostSnapshot| {
+        s.session.as_ref().is_some_and(|x| {
+            x.phase == SessionPhase::Streaming
+                && x.frame_rates == vec![30]
+                && x.stream.as_ref().is_some_and(|c| c.max_fps == 30)
+                && !x.custom
+        })
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tablet_changes_windows_scaling() {
     let r = rig().await;
     streaming(&r).await;
@@ -461,4 +508,66 @@ async fn unknown_tablet_cannot_connect_without_pairing() {
     .await;
     assert!(r.host.snapshot().session.is_none());
     assert_eq!(r.host_platform.state.displays_acquired.load(Ordering::SeqCst), 0);
+}
+
+/// Host and client of the given app versions on loopback; the client tries
+/// to pair. Returns the client's failure phase and the host's snapshot.
+async fn connect_versions(host_version: &str, tablet_version: &str) -> (ClientPhase, HostSnapshot) {
+    let (hd, cd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let port = free_port();
+    let settings = HostSettings { control_port: port, discoverable: false, ..Default::default() };
+    secondscrn_session::settings::save(&hd.path().join("settings.json"), &settings).unwrap();
+    let host = HostEngine::start_on(
+        tokio::runtime::Handle::current(),
+        HostConfig {
+            data_dir: hd.path().to_path_buf(),
+            default_host_name: "Test PC".into(),
+            listen_addr: [127, 0, 0, 1].into(),
+            interfaces: InterfacePolicy::loopback_only(),
+            enable_mdns: false,
+            protector: Arc::new(UnprotectedForTests),
+            logs: None,
+            app_version: host_version.into(),
+        },
+        Arc::new(FakeHostPlatform::default()),
+    )
+    .unwrap();
+    let mut hs = host.subscribe();
+    wait(&mut hs, 5, "listening", |s: &HostSnapshot| s.listening).await;
+    let client = ClientEngine::start_on(
+        tokio::runtime::Handle::current(),
+        ClientConfig {
+            data_dir: cd.path().to_path_buf(),
+            interfaces: InterfacePolicy::loopback_only(),
+            protector: Arc::new(UnprotectedForTests),
+            logs: None,
+            app_version: tablet_version.into(),
+        },
+        Arc::new(FakeClientPlatform::default()),
+    )
+    .unwrap();
+    let mut cs = client.subscribe();
+    client.connect(ConnectTarget { address: "127.0.0.1".into(), port, fingerprint: None });
+    let failed = wait(&mut cs, 10, "failure", |s: &ClientSnapshot| matches!(s.phase, ClientPhase::Failed { .. })).await;
+    let host_snap = wait(&mut hs, 5, "mismatch on the PC", |s: &HostSnapshot| s.version_mismatch.is_some()).await;
+    (failed.phase, host_snap)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn different_pre_release_versions_name_the_exact_version_to_install() {
+    // Tablet behind: it is offered exactly the PC's version, not the newest.
+    let (phase, host) = connect_versions("0.0.3", "0.0.2").await;
+    let ClientPhase::Failed { message, update_to, .. } = phase else { unreachable!() };
+    assert_eq!(update_to.as_deref(), Some("0.0.3"));
+    assert!(message.contains("Install SecondScrn 0.0.3 on this tablet"), "{message}");
+    let m = host.version_mismatch.unwrap();
+    assert_eq!((m.tablet_version.as_str(), m.host_version.as_str()), ("0.0.2", "0.0.3"));
+    assert!(host.pairing.is_none(), "no pairing with a mismatched tablet");
+
+    // PC behind: the tablet asks for the PC to be updated to its version.
+    let (phase, host) = connect_versions("0.0.2", "0.0.3").await;
+    let ClientPhase::Failed { message, update_to, .. } = phase else { unreachable!() };
+    assert_eq!(update_to, None);
+    assert!(message.contains("Install SecondScrn 0.0.3 on the PC"), "{message}");
+    assert_eq!(host.version_mismatch.unwrap().tablet_version, "0.0.3");
 }

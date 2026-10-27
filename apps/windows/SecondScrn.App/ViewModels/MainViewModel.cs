@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Xaml;
 using SecondScrn.Services;
@@ -42,6 +43,7 @@ public sealed partial class MainViewModel : ObservableObject
         _updating = true;
         try
         {
+            TrackSessionStart(s);
             SyncDevices(s);
             OnPropertyChanged(string.Empty); // refresh every binding
         }
@@ -51,23 +53,47 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>Rebuilds the list only when something in it changed: state
+    /// arrives several times a second, and a rebuild closes open drop-downs.</summary>
     private void SyncDevices(HostState s)
     {
-        Devices.Clear();
-        foreach (var d in s.Devices.OrderByDescending(d => d.LastSeen ?? 0))
+        var items = s.Devices.OrderByDescending(d => d.LastSeen ?? 0).Select(d => new DeviceItem
         {
-            var seen = d.LastSeen is { } t ? $"last connected {FormatAge(t)}" : "never connected";
-            Devices.Add(new DeviceItem
-            {
-                Fingerprint = d.Fingerprint,
-                Name = d.Name,
-                Details = $"{d.Model} · ID {d.FingerprintShort} · paired {FormatAge(d.PairedAt)} · {seen}",
-                Connected = d.Connected,
-                AutoReconnect = d.AutoReconnect,
-                PresetIndex = d.Preset is { } p ? (int)p + 1 : 0,
-            });
-        }
+            Fingerprint = d.Fingerprint,
+            Name = d.Name,
+            Details = $"{d.Model} · ID {d.FingerprintShort} · paired {FormatAge(d.PairedAt)} · " +
+                      (d.LastSeen is { } t ? $"last connected {FormatAge(t)}" : "never connected"),
+            Connected = d.Connected,
+            AutoReconnect = d.AutoReconnect,
+            PresetIndex = d.Preset is { } p ? (int)p + 1 : 0,
+        }).ToList();
+        static object Key(DeviceItem d) => (d.Fingerprint, d.Name, d.Details, d.Connected, d.AutoReconnect, d.PresetIndex);
+        if (items.Select(Key).SequenceEqual(Devices.Select(Key))) return;
+        Devices.Clear();
+        foreach (var d in items) Devices.Add(d);
     }
+
+    // Settings that apply when a tablet connects, as they were when the
+    // current session started.
+    private (ulong Since, VideoCodec? Codec, uint Bitrate, uint? FpsLimit, GpuKind? Gpu)? _sessionStart;
+
+    private void TrackSessionStart(HostState s)
+    {
+        if (s.Session is not { } x)
+        {
+            _sessionStart = null;
+            return;
+        }
+        if (_sessionStart?.Since != x.ConnectedSince)
+            _sessionStart = (x.ConnectedSince, s.Settings.PreferredCodec, s.Settings.MaxBitrateMbps, s.Settings.FpsLimit, s.Settings.EncoderGpu);
+    }
+
+    /// <summary>A setting that applies to new connections changed during this one.</summary>
+    public bool NeedsReconnect => _sessionStart is { } start && _s is { } s &&
+        (start.Codec, start.Bitrate, start.FpsLimit, start.Gpu) !=
+        (s.Settings.PreferredCodec, s.Settings.MaxBitrateMbps, s.Settings.FpsLimit, s.Settings.EncoderGpu);
+
+    internal void Reconnect() => _host.Host.Reconnect();
 
     private static string FormatAge(ulong unixSeconds)
     {
@@ -127,26 +153,90 @@ public sealed partial class MainViewModel : ObservableObject
         _ => IsConnected ? "Measuring…" : "",
     };
 
+    /// <summary><paramref name="v"/> right-aligned in <paramref name="width"/>
+    /// digit widths (padded with figure spaces), so changing numbers don't
+    /// move the text around them.</summary>
+    private static string Fixed(double v, string format, int width) =>
+        v.ToString(format, CultureInfo.CurrentCulture).PadLeft(width, ' ');
+
     public string ResolutionText => _s?.Session is { } s ? $"{s.Width} × {s.Height}" : "–";
-    public string FpsText => _s?.Session is { } s ? $"{s.Metrics.EncodeFps:0} fps (target {s.Metrics.TargetFps})" : "–";
-    public string BitrateText => _s?.Session is { } s
-        ? $"{s.Metrics.SendMbps:0.0} Mbit/s (encoder target {s.Metrics.TargetMbps:0.0})" : "–";
-    public string LatencyText => _s?.Session?.Metrics.RttMs is { } r ? $"{r:0} ms round trip" : "–";
-    public string LossText => _s?.Session?.Metrics.LossPercent is { } l ? $"{l:0.0} %" : "–";
+    /// What the tablet shows when it reports it; what the PC sends otherwise.
+    public string FpsText => _s?.Session is not { } s ? "–"
+        : $"{Fixed(s.Metrics.ClientFps ?? s.Metrics.EncodeFps, "0", 3)} fps";
+    public string FpsDetail => _s?.Session is not { } s ? ""
+        : s.Metrics.ClientFps is not null
+            ? $"shown · sending {Fixed(s.Metrics.EncodeFps, "0", 3)} · target {Fixed(s.Metrics.TargetFps, "0", 3)}"
+            : $"sending · target {Fixed(s.Metrics.TargetFps, "0", 3)}";
+    public string BitrateText => _s?.Session is { } s ? $"{Fixed(s.Metrics.SendMbps, "0.0", 5)} Mbit/s" : "–";
+    public string BitrateDetail => _s?.Session is { } s ? $"encoder target {Fixed(s.Metrics.TargetMbps, "0.0", 5)}" : "";
+    public string LatencyText => _s?.Session?.Metrics.RttMs is { } r ? $"{Fixed(r, "0", 3)} ms" : "–";
+    public string LossText => _s?.Session?.Metrics.LossPercent is { } l ? $"{Fixed(l, "0.0", 4)} %" : "–";
+    public string CodecText => _s?.Session is { } s ? Codec(s.Codec) : "–";
     public string QualityText => PresetsData[PresetIndex];
     public string[] Presets => PresetsData;
     public string[] Codecs => CodecsData;
     public string[] Themes => ThemesData;
-    public int[] FpsOptions => FpsData;
 
     private static readonly string[] PresetsData = ["Automatic", "High quality", "Smooth", "Weak Wi-Fi"];
 
+    private static readonly string[] PresetHints =
+    [
+        "Full resolution at 60 fps; the bitrate follows the network.",
+        "About twice the bitrate for sharper text and video, slightly more latency.",
+        "75 % resolution at up to 120 fps.",
+        "67 % resolution at 30 fps with a low bitrate.",
+    ];
+
+    /// <summary>The connected tablet's preset, remembered for that tablet
+    /// (the default preset when none is connected).</summary>
     public int PresetIndex
+    {
+        get => (int)(_s?.Session?.Preset ?? _s?.Settings.Preset ?? Preset.Automatic);
+        set
+        {
+            if (_updating || _s?.Session is null || value < 0 || value == PresetIndex) return;
+            SetSessionPreset((Preset)value);
+        }
+    }
+
+    public string PresetHint => PresetHints[PresetIndex];
+
+    /// <summary>The network can't carry the chosen resolution and frame rate.</summary>
+    public bool NetworkLimited => _s?.Session?.NetworkLimited == true;
+
+    public string NetworkLimitedText => _s?.Session is { } s
+        ? $"The network can't carry {s.Width} × {s.Height} at {s.MaxFps} fps right now, so fewer frames are sent. Choose a lower resolution or frame rate below."
+        : "";
+
+    public Visibility PresetChangedVisibility => _s?.Session?.Custom == true ? Visibility.Visible : Visibility.Collapsed;
+
+    public string PresetChangedText => $"Resolution or frame rate changed from “{PresetsData[PresetIndex]}”.";
+
+    /// <summary>Back to the preset's resolution and frame rate.</summary>
+    internal void ResetPreset()
+    {
+        if (_s?.Session is { } s) SetSessionPreset(s.Preset);
+    }
+
+    private void SetSessionPreset(Preset preset)
+    {
+        try
+        {
+            _host.Host.SetSessionPreset(preset);
+        }
+        catch (Exception)
+        {
+            // The tablet disconnected meanwhile.
+        }
+    }
+
+    /// <summary>For tablets without a preset of their own.</summary>
+    public int DefaultPresetIndex
     {
         get => (int)(_s?.Settings.Preset ?? Preset.Automatic);
         set
         {
-            if (_updating || _s is null || value < 0 || value == PresetIndex) return;
+            if (_updating || _s is null || value < 0 || value == DefaultPresetIndex) return;
             _host.Host.SetPreset((Preset)value);
         }
     }
@@ -219,11 +309,34 @@ public sealed partial class MainViewModel : ObservableObject
     {
         null => "Available while a tablet is connected.",
         { ScalePercent: 0 } s => $"{s.Width} × {s.Height} was chosen in the Windows display settings. Pick a size to return to one that fills the tablet.",
-        _ => "Lower resolutions need less bandwidth (helpful on weak Wi-Fi); the tablet scales the picture up. " +
-             "The choice is remembered for this tablet and can also be changed on the tablet.",
+        _ => "Lower resolutions need less bandwidth; the tablet scales the picture up. " +
+             "Changes are remembered for this tablet and can also be made on the tablet.",
     };
 
     public string? LastError => _s?.LastError;
+
+    // ---- Version mismatch (before 1.0 both apps run the same version) -------
+
+    public bool HasVersionMismatch => _s?.VersionMismatch is not null;
+
+    public string VersionMismatchText => _s?.VersionMismatch is not { } m ? ""
+        : m.TabletOlder
+            ? $"{m.DeviceName} runs SecondScrn {m.TabletVersion}, this PC {m.HostVersion}. Both must run the same version: install SecondScrn {m.HostVersion} on the tablet ({m.TabletAppUrl})."
+            : $"{m.DeviceName} runs SecondScrn {m.TabletVersion}, this PC {m.HostVersion}. Both must run the same version: install SecondScrn {m.TabletVersion} on this PC.";
+
+    public Visibility InstallTabletVersionVisibility =>
+        _s?.VersionMismatch is { TabletOlder: false } ? Visibility.Visible : Visibility.Collapsed;
+
+    public string InstallTabletVersionLabel => _s?.VersionMismatch is { } m ? $"Install SecondScrn {m.TabletVersion}" : "";
+
+    public Visibility TabletAppLinkVisibility =>
+        _s?.VersionMismatch is { TabletOlder: true } ? Visibility.Visible : Visibility.Collapsed;
+
+    public string TabletAppLabel => _s?.VersionMismatch is { } m ? $"Tablet app {m.HostVersion}" : "";
+
+    internal string? TabletAppUrl => _s?.VersionMismatch?.TabletAppUrl;
+
+    internal string? TabletVersion => _s?.VersionMismatch?.TabletVersion;
     public bool HasError => !string.IsNullOrEmpty(_s?.LastError);
 
     // ---- Diagnostics -------------------------------------------------------
@@ -318,35 +431,60 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    private static readonly int[] FpsData = [30, 60, 90, 120];
+    /// <summary>Index of the entry of <paramref name="values"/> closest to <paramref name="value"/>.</summary>
+    private static int Nearest(uint[] values, uint value) =>
+        values.Select((v, i) => (Distance: Math.Abs((long)v - value), i)).MinBy(x => x.Distance).i;
 
-    public int MaxFpsIndex
+    private static readonly uint[] FpsLimitData = [30, 60, 90, 120, 144];
+    private static readonly string[] FpsLimitLabels = ["No limit", .. FpsLimitData.Select(f => $"{f} fps")];
+
+    public string[] FpsLimitOptions => FpsLimitLabels;
+
+    /// <summary>0: no limit, then <see cref="FpsLimitData"/>.</summary>
+    public int FpsLimitIndex
     {
-        get => Math.Max(0, Array.IndexOf(FpsData, (int)(_s?.Settings.MaxFps ?? 60)));
+        get => _s?.Settings.FpsLimit is { } l ? Nearest(FpsLimitData, l) + 1 : 0;
         set
         {
-            if (value < 0) return;
-            Push(s => s with { MaxFps = (uint)FpsData[value] });
+            if (_updating || value < 0 || value == FpsLimitIndex) return;
+            Push(s => s with { FpsLimit = value == 0 ? null : FpsLimitData[value - 1] });
         }
     }
+
+    public bool LimitBitrate
+    {
+        get => _s?.Settings.MaxBitrateMbps > 0;
+        set
+        {
+            if (_updating || value == LimitBitrate) return;
+            Push(s => s with { MaxBitrateMbps = value ? 40u : 0u });
+        }
+    }
+
+    public Visibility BitrateLimitVisibility => LimitBitrate ? Visibility.Visible : Visibility.Collapsed;
 
     public double MaxBitrate
     {
         get => _s?.Settings.MaxBitrateMbps ?? 0;
         set
         {
-            if (double.IsNaN(value) || value < 0) return;
+            if (double.IsNaN(value) || value < 1 || (uint)value == _s?.Settings.MaxBitrateMbps) return;
             Push(s => s with { MaxBitrateMbps = (uint)value });
         }
     }
 
-    public double LingerSeconds
+    private static readonly uint[] LingerData = [0, 10, 30, 60, 300];
+    private static readonly string[] LingerLabels = ["Remove it right away", "10 seconds", "30 seconds", "1 minute", "5 minutes"];
+
+    public string[] LingerOptions => LingerLabels;
+
+    public int LingerIndex
     {
-        get => _s?.Settings.DisplayLingerSecs ?? 30;
+        get => Nearest(LingerData, _s?.Settings.DisplayLingerSecs ?? 30);
         set
         {
-            if (double.IsNaN(value) || value < 0) return;
-            Push(s => s with { DisplayLingerSecs = (uint)value });
+            if (_updating || value < 0 || value == LingerIndex) return;
+            Push(s => s with { DisplayLingerSecs = LingerData[value] });
         }
     }
 
@@ -414,19 +552,33 @@ public sealed partial class MainViewModel : ObservableObject
     private string GpuName(GpuKind kind) =>
         _s?.EncoderGpu.Gpus.FirstOrDefault(g => g.Kind == kind)?.Name ?? (kind == GpuKind.Integrated ? "integrated GPU" : "dedicated GPU");
 
-    public string[] EncoderGpuOptions =>
-    [
-        $"Integrated graphics ({GpuName(GpuKind.Integrated)}): uses less power",
-        $"Dedicated graphics ({GpuName(GpuKind.Dedicated)}): more headroom, uses more power",
-    ];
+    private string[] _encoderGpuOptions = [];
+
+    /// <summary>The same array instance while the names don't change, so the
+    /// combo box keeps its selection across snapshots.</summary>
+    public string[] EncoderGpuOptions
+    {
+        get
+        {
+            string[] options =
+            [
+                "Automatic (recommended)",
+                $"Integrated graphics ({GpuName(GpuKind.Integrated)}): uses less power",
+                $"Dedicated graphics ({GpuName(GpuKind.Dedicated)}): more headroom, uses more power",
+            ];
+            if (!options.SequenceEqual(_encoderGpuOptions)) _encoderGpuOptions = options;
+            return _encoderGpuOptions;
+        }
+    }
 
     public int EncoderGpuIndex
     {
-        get => (int)(_s?.Settings.EncoderGpu ?? GpuKind.Integrated);
+        // 0: automatic, then the GPU kinds.
+        get => _s?.Settings.EncoderGpu is { } k ? (int)k + 1 : 0;
         set
         {
-            if (value < 0) return;
-            Push(s => s with { EncoderGpu = (GpuKind)value });
+            if (value < 0 || value == EncoderGpuIndex) return;
+            Push(s => s with { EncoderGpu = value == 0 ? null : (GpuKind)(value - 1) });
         }
     }
 
@@ -437,8 +589,8 @@ public sealed partial class MainViewModel : ObservableObject
 
     public bool HasEncoderGpuProblem => !string.IsNullOrEmpty(_s?.EncoderGpu.Problem);
 
-    public string EncoderGpuProblem => _s?.EncoderGpu.Problem is { } p
-        ? $"The {GpuName(_s.Settings.EncoderGpu)} cannot encode, so the other GPU is used. {p}"
+    public string EncoderGpuProblem => _s?.EncoderGpu.Problem is { } p && _s.Settings.EncoderGpu is { } kind
+        ? $"The {GpuName(kind)} cannot encode, so the other GPU is used. {p}"
         : "";
 
     public string ActiveEncoderText
@@ -446,7 +598,10 @@ public sealed partial class MainViewModel : ObservableObject
         get
         {
             var active = _s?.EncoderGpu.Gpus.FirstOrDefault(g => g.Active);
-            return active is null ? "No working hardware encoder." : $"Encoding on {active.Name}.";
+            if (active is null) return "No working hardware encoder.";
+            return _s?.Settings.EncoderGpu is null && _s?.EncoderGpu.ChoiceAvailable == true
+                ? $"Encoding on {active.Name}, the GPU Windows runs SecondScrn on. Change it here or in Windows Settings → System → Display → Graphics."
+                : $"Encoding on {active.Name}.";
         }
     }
 
@@ -466,11 +621,31 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    public string[] BenchSizeOptions => BenchSizes
-        .Select((z, i) => i == 0 && _lastStreamSize is not null ? $"{z.W} × {z.H} (your tablet)" : $"{z.W} × {z.H}")
-        .ToArray();
+    private string[] _benchSizeOptions = [];
 
-    public int BenchSizeIndex { get; set; }
+    public string[] BenchSizeOptions
+    {
+        get
+        {
+            var options = BenchSizes
+                .Select((z, i) => i == 0 && _lastStreamSize is not null ? $"{z.W} × {z.H} (your tablet)" : $"{z.W} × {z.H}")
+                .ToArray();
+            if (!options.SequenceEqual(_benchSizeOptions)) _benchSizeOptions = options;
+            return _benchSizeOptions;
+        }
+    }
+
+    private int _benchSizeIndex;
+
+    public int BenchSizeIndex
+    {
+        get => _benchSizeIndex;
+        set
+        {
+            // -1 while the combo box swaps its items.
+            if (value >= 0) _benchSizeIndex = value;
+        }
+    }
 
     public int[] BenchFpsOptions => BenchFpsData;
 

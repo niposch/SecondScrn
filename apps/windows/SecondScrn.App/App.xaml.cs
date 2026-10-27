@@ -114,7 +114,9 @@ public partial class App : Application
         try
         {
             var version = await Updates.CheckAsync();
-            if (version is not null) _tray?.Notify("Update available", $"SecondScrn {version} is ready to install from Settings.");
+            if (version is not null)
+                _tray?.Notify("Update available",
+                    $"SecondScrn {version} is ready to install from Settings. Update the tablet app to {version} at the same time.");
         }
         catch (Exception)
         {
@@ -123,6 +125,15 @@ public partial class App : Application
     }
 
     internal async Task InstallUpdateAsync() => await Updates.ApplyAndRestartAsync(Shutdown);
+
+    /// Updates this PC to exactly `version` (a tablet runs it); false when
+    /// that version isn't available as an update.
+    internal async Task<bool> InstallVersionAsync(string version)
+    {
+        if (!await Updates.CheckVersionAsync(version)) return false;
+        await Updates.ApplyAndRestartAsync(Shutdown);
+        return true;
+    }
 
     public void Quit()
     {

@@ -40,6 +40,8 @@ public sealed partial class DiagnosticsPage : Page
         await File.WriteAllTextAsync(file.Path, ViewModel.ExportDiagnostics());
     }
 
+    private void OnBenchmark(object sender, RoutedEventArgs e) => ViewModel.RunBenchmark();
+
     private void OnOpenLogs(object sender, RoutedEventArgs e)
     {
         var dir = Path.Combine(ViewModel.DataDirectory, "logs");

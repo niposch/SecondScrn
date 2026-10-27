@@ -348,14 +348,23 @@ fun DisplayDropdowns(state: ClientState, repo: ClientRepository) {
 fun StreamStats(state: ClientState) {
     val s = state.stream ?: return
     val m = state.metrics
-    // Format each value on its own: composed text may contain '%'.
+    // Format each value on its own: composed text may contain '%'. Numbers
+    // keep a fixed width so changing values don't shift the line.
     val parts = listOf(
         "${s.codec} ${s.width}×${s.height}",
-        "%.0f fps".format(m.renderFps),
-        "%.1f Mbit/s".format(m.bitrateMbps),
-        "RTT " + (m.rttMs?.let { "%.0f ms".format(it) } ?: "–"),
-        "loss " + (m.lossPercent?.let { "%.1f".format(it) + " %" } ?: "–"),
+        fixed(m.renderFps, 0, 3) + " fps",
+        fixed(m.bitrateMbps, 1, 5) + " Mbit/s",
+        "RTT " + fixed(m.rttMs, 0, 3) + " ms",
+        "loss " + fixed(m.lossPercent, 1, 4) + " %",
         m.health.name.lowercase(),
     )
-    Text(parts.joinToString(" · "), style = MaterialTheme.typography.bodyMedium)
+    Text(
+        parts.joinToString(" · "),
+        style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+        maxLines = 1,
+    )
 }
+
+/** [value] right-aligned in [width] digit widths (figure spaces), "–" if unknown. */
+private fun fixed(value: Float?, decimals: Int, width: Int): String =
+    (value?.let { "%.${decimals}f".format(it) } ?: "–").padStart(width, ' ')

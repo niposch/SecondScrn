@@ -19,6 +19,8 @@ use windows::Win32::System::Registry::{
 use windows::core::{HSTRING, w};
 
 const KEY: windows::core::PCWSTR = w!(r"Software\Microsoft\DirectX\UserGpuPreferences");
+/// `GpuPreference=1`: power saving (the integrated GPU).
+pub const POWER_SAVING: u32 = 1;
 /// `GpuPreference=2`: high performance (the dedicated GPU).
 pub const HIGH_PERFORMANCE: u32 = 2;
 

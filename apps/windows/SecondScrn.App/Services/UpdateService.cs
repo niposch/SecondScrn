@@ -36,16 +36,41 @@ internal sealed class UpdateService
     public async Task<string?> CheckAsync()
     {
         if (!_manager.IsInstalled) return null;
+        _exact = null;
         _pending = await _manager.CheckForUpdatesAsync();
         return AvailableVersion;
     }
+
+    /// Release assets of exactly `version` (the PC and tablet apps are
+    /// updated in lockstep before 1.0: the older side gets the other's
+    /// version, not necessarily the newest).
+    public static string ReleaseUrl(string version) => $"{RepositoryUrl}/releases/download/v{version}/";
+
+    /// The tablet app matching `version`.
+    public static string TabletAppUrl(string version) => $"{ReleaseUrl(version)}SecondScrn-{version}-android.apk";
+
+    /// Prepares an update to exactly `version` (instead of the newest).
+    /// Returns false when that release isn't an update for this install.
+    public async Task<bool> CheckVersionAsync(string version)
+    {
+        if (!_manager.IsInstalled) return false;
+        var exact = new UpdateManager(new SimpleWebSource(ReleaseUrl(version)));
+        var info = await exact.CheckForUpdatesAsync();
+        if (info is null || info.TargetFullRelease.Version.ToString() != version) return false;
+        _exact = exact;
+        _pending = info;
+        return true;
+    }
+
+    private UpdateManager? _exact;
 
     /// <summary>Downloads the update and restarts into it.</summary>
     public async Task ApplyAndRestartAsync(Action beforeRestart)
     {
         if (_pending is null) return;
-        await _manager.DownloadUpdatesAsync(_pending);
+        var manager = _exact ?? _manager;
+        await manager.DownloadUpdatesAsync(_pending);
         beforeRestart();
-        _manager.ApplyUpdatesAndRestart(_pending);
+        manager.ApplyUpdatesAndRestart(_pending);
     }
 }

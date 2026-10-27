@@ -115,6 +115,19 @@ pub struct EncoderGpuView {
     pub problem: Option<String>,
 }
 
+/// The PC and a tablet run different app versions (before 1.0 they must
+/// match): the older side installs exactly the other's version.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct VersionMismatchView {
+    pub device_name: String,
+    pub tablet_version: String,
+    pub host_version: String,
+    /// The tablet is behind (otherwise this PC is).
+    pub tablet_older: bool,
+    /// Download of the tablet app matching this PC.
+    pub tablet_app_url: String,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct BenchResultView {
     pub gpu: String,
@@ -188,6 +201,12 @@ pub struct SessionView {
     pub resolutions: Vec<ResolutionView>,
     /// Frame rates offered for this tablet; `max_fps` is the current one.
     pub frame_rates: Vec<u32>,
+    /// The tablet's preset (its own, or the default).
+    pub preset: Preset,
+    /// Resolution or frame rate differ from the preset's.
+    pub custom: bool,
+    /// The network can't carry the chosen resolution and frame rate.
+    pub network_limited: bool,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -238,8 +257,10 @@ pub struct SettingsView {
     pub discoverable: bool,
     pub preset: Preset,
     pub preferred_codec: Option<VideoCodec>,
-    pub encoder_gpu: GpuKind,
-    pub max_fps: u32,
+    /// `None`: automatic.
+    pub encoder_gpu: Option<GpuKind>,
+    /// Highest frame rate of any stream; `None`: no limit.
+    pub fps_limit: Option<u32>,
     pub max_bitrate_mbps: u32,
     pub display_linger_secs: u32,
     pub start_with_windows: bool,
@@ -265,6 +286,8 @@ pub struct HostState {
     pub encoder_gpu: EncoderGpuView,
     pub benchmark: BenchmarkView,
     pub last_error: Option<String>,
+    /// A tablet with another app version tried to connect.
+    pub version_mismatch: Option<VersionMismatchView>,
     pub settings: SettingsView,
     pub data_dir: String,
     pub version: String,
@@ -325,8 +348,8 @@ fn settings_from(s: &HostSettings) -> SettingsView {
         discoverable: s.discoverable,
         preset: preset_from(s.preset),
         preferred_codec: s.preferred_codec.map(codec_from),
-        encoder_gpu: gpu_from(s.encoder_gpu),
-        max_fps: s.max_fps,
+        encoder_gpu: s.encoder_gpu_choice.map(gpu_from),
+        fps_limit: s.fps_limit,
         max_bitrate_mbps: s.max_bitrate_mbps,
         display_linger_secs: s.display_linger_secs,
         start_with_windows: s.start_with_windows,
@@ -348,8 +371,8 @@ fn settings_to(v: SettingsView, mut base: HostSettings) -> HostSettings {
     base.discoverable = v.discoverable;
     base.preset = preset_to(v.preset);
     base.preferred_codec = v.preferred_codec.map(codec_to);
-    base.encoder_gpu = gpu_to(v.encoder_gpu);
-    base.max_fps = v.max_fps;
+    base.encoder_gpu_choice = v.encoder_gpu.map(gpu_to);
+    base.fps_limit = v.fps_limit;
     base.max_bitrate_mbps = v.max_bitrate_mbps;
     base.display_linger_secs = v.display_linger_secs;
     base.start_with_windows = v.start_with_windows;
@@ -410,6 +433,9 @@ pub fn to_view(s: &HostSnapshot, data_dir: &str, extras: &Extras) -> HostState {
                 })
                 .collect(),
             frame_rates: x.frame_rates.clone(),
+            preset: preset_from(x.preset),
+            custom: x.custom,
+            network_limited: x.network_limited,
             metrics: MetricsView {
                 capture_fps: m.pipeline.capture_fps,
                 encode_fps: m.pipeline.encode_fps,
@@ -490,6 +516,14 @@ pub fn to_view(s: &HostSnapshot, data_dir: &str, extras: &Extras) -> HostState {
         encoder_gpu: extras.encoder_gpu.clone(),
         benchmark: extras.benchmark.clone(),
         last_error: s.last_error.clone(),
+        version_mismatch: s.version_mismatch.as_ref().map(|m| VersionMismatchView {
+            device_name: m.device_name.clone(),
+            tablet_version: m.tablet_version.clone(),
+            host_version: m.host_version.clone(),
+            tablet_older: secondscrn_protocol::compare_versions(&m.tablet_version, &m.host_version)
+                == Some(std::cmp::Ordering::Less),
+            tablet_app_url: secondscrn_protocol::android_apk_url(&m.host_version),
+        }),
         settings: settings_from(&s.settings),
         data_dir: data_dir.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -525,24 +559,29 @@ fn current_exe() -> Option<std::path::PathBuf> {
     std::env::current_exe().ok()
 }
 
-/// Makes Windows start SecondScrn on the chosen GPU from the next launch:
-/// the dedicated GPU needs the "high performance" graphics preference (see
-/// [`crate::gpu`]); for the integrated one, a high-performance preference
-/// is removed.
-fn apply_gpu_preference(choice: EncoderGpu) {
+/// Makes Windows start SecondScrn on the chosen GPU from the next launch
+/// (see [`crate::gpu`]): an encoder only starts in a process Windows runs on
+/// its GPU. Automatic leaves the choice to Windows (and to its per-app
+/// graphics setting); switching to it removes the preference set for an
+/// earlier explicit choice.
+fn apply_gpu_preference(choice: Option<EncoderGpu>, switching: bool) {
     let Some(exe) = current_exe() else { return };
-    let current = crate::gpu::preference(&exe);
     let wanted = match choice {
-        EncoderGpu::Dedicated => Some(crate::gpu::HIGH_PERFORMANCE),
-        EncoderGpu::Integrated if current == Some(crate::gpu::HIGH_PERFORMANCE) => None,
-        EncoderGpu::Integrated => current,
+        Some(EncoderGpu::Dedicated) => Some(crate::gpu::HIGH_PERFORMANCE),
+        Some(EncoderGpu::Integrated) => Some(crate::gpu::POWER_SAVING),
+        None if switching => None,
+        None => return,
     };
     if let Err(e) = crate::gpu::set_preference(&exe, wanted) {
         tracing::warn!(error = format!("{e:#}"), "cannot set the graphics preference");
     }
 }
 
-fn encoder_gpu_view(platform: &WindowsHostPlatform, choice: EncoderGpu, started_with: Option<u32>) -> EncoderGpuView {
+fn encoder_gpu_view(
+    platform: &WindowsHostPlatform,
+    choice: Option<EncoderGpu>,
+    started_with: Option<u32>,
+) -> EncoderGpuView {
     let active = platform.active_gpu();
     let gpus: Vec<GpuView> = platform
         .gpus()
@@ -557,23 +596,20 @@ fn encoder_gpu_view(platform: &WindowsHostPlatform, choice: EncoderGpu, started_
         .collect();
     let choice_available =
         gpus.iter().any(|g| g.kind == GpuKind::Integrated) && gpus.iter().any(|g| g.kind == GpuKind::Dedicated);
-    let chosen: Vec<&GpuView> = gpus.iter().filter(|g| g.kind == gpu_from(choice)).collect();
-    let chosen_usable = chosen.iter().any(|g| g.usable);
     // Windows applies the graphics preference at process start.
     let pending = current_exe().map(|e| crate::gpu::preference(&e)).unwrap_or(started_with) != started_with;
-    let blocked = !chosen.is_empty() && !chosen_usable;
-    let restart_required = match choice {
-        EncoderGpu::Dedicated => blocked && pending,
-        // Running on the dedicated GPU keeps it powered, and the integrated
-        // GPU's encoder is much slower in such a process.
-        EncoderGpu::Integrated => choice_available && pending && started_with == Some(crate::gpu::HIGH_PERFORMANCE),
+    let (restart_required, problem) = match choice {
+        None => (choice_available && pending, None),
+        Some(kind) => {
+            let chosen: Vec<&GpuView> = gpus.iter().filter(|g| g.kind == gpu_from(kind)).collect();
+            let in_use = active.as_ref().is_some_and(|(_, k)| *k == kind);
+            let restart = choice_available && pending && !in_use;
+            let blocked = !chosen.is_empty() && !chosen.iter().any(|g| g.usable);
+            let problem = (blocked && !restart).then(|| chosen.iter().find_map(|g| g.problem.clone())).flatten();
+            (restart, problem)
+        }
     };
-    EncoderGpuView {
-        choice_available,
-        restart_required,
-        problem: if blocked && !pending { chosen.iter().find_map(|g| g.problem.clone()) } else { None },
-        gpus,
-    }
+    EncoderGpuView { choice_available, restart_required, problem, gpus }
 }
 
 fn bench_view(r: crate::bench::BenchResult) -> BenchResultView {
@@ -600,7 +636,10 @@ fn run_benchmark_helper(width: u32, height: u32, fps: u32) -> anyhow::Result<Vec
     anyhow::ensure!(helper.exists(), "the benchmark helper is missing ({})", helper.display());
     let mut results = Vec::new();
     let gpus = [
-        (EncoderGpu::Integrated, "integrated", None),
+        // Power saving, not "let Windows decide": on desktops whose screens
+        // are on the graphics card, the integrated GPU's encoder only starts
+        // in a process Windows runs on the integrated GPU.
+        (EncoderGpu::Integrated, "integrated", Some(crate::gpu::POWER_SAVING)),
         (EncoderGpu::Dedicated, "dedicated", Some(crate::gpu::HIGH_PERFORMANCE)),
     ];
     for (kind, arg, pref) in gpus {
@@ -675,7 +714,7 @@ pub struct SecondScrnHost {
 }
 
 impl SecondScrnHost {
-    fn refresh_encoder_gpu(&self, choice: EncoderGpu) {
+    fn refresh_encoder_gpu(&self, choice: Option<EncoderGpu>) {
         let view = encoder_gpu_view(&self.platform, choice, self.started_with);
         self.extras.update(|x| x.encoder_gpu = view);
     }
@@ -697,8 +736,8 @@ impl SecondScrnHost {
         let started_with = current_exe().and_then(|e| crate::gpu::preference(&e));
         // Keep the preference in line with the setting (e.g. after it was
         // reset in Windows); a change applies from the next start.
-        apply_gpu_preference(settings.encoder_gpu);
-        let platform = Arc::new(WindowsHostPlatform::new(DisplaySource::Virtual, settings.encoder_gpu));
+        apply_gpu_preference(settings.encoder_gpu_choice, false);
+        let platform = Arc::new(WindowsHostPlatform::new(DisplaySource::Virtual, settings.encoder_gpu_choice));
         let engine = Arc::new(
             HostEngine::start(
                 HostConfig {
@@ -717,7 +756,7 @@ impl SecondScrnHost {
         );
         let extras = Arc::new(SharedExtras {
             extras: Mutex::new(Extras {
-                encoder_gpu: encoder_gpu_view(&platform, settings.encoder_gpu, started_with),
+                encoder_gpu: encoder_gpu_view(&platform, settings.encoder_gpu_choice, started_with),
                 benchmark: BenchmarkView {
                     running: false,
                     width: 0,
@@ -815,8 +854,21 @@ impl SecondScrnHost {
         self.engine.disconnect();
     }
 
+    /// Ends the session and has the tablet connect again, so settings for
+    /// new connections apply.
+    pub fn reconnect(&self) {
+        self.engine.reconnect();
+    }
+
+    /// Sets the default preset (tablets without their own).
     pub fn set_preset(&self, preset: Preset) {
         self.engine.set_preset(preset_to(preset));
+    }
+
+    /// Sets the connected tablet's preset; choosing the current one again
+    /// undoes resolution and frame-rate changes.
+    pub fn set_session_preset(&self, preset: Preset) -> Result<(), HostError> {
+        self.engine.set_session_preset(preset_to(preset)).map_err(fail)
     }
 
     pub fn revoke_device(&self, fingerprint: String) -> Result<(), HostError> {
@@ -852,10 +904,10 @@ impl SecondScrnHost {
 
     pub fn update_settings(&self, settings: SettingsView) {
         let base = self.engine.snapshot().settings;
-        let (old_gpu, new_gpu) = (base.encoder_gpu, gpu_to(settings.encoder_gpu));
+        let (old_gpu, new_gpu) = (base.encoder_gpu_choice, settings.encoder_gpu.map(gpu_to));
         self.engine.update_settings(settings_to(settings, base));
         if old_gpu != new_gpu {
-            apply_gpu_preference(new_gpu);
+            apply_gpu_preference(new_gpu, true);
             self.refresh_encoder_gpu(new_gpu);
             // Takes effect right away when this process can already use that
             // GPU's encoder; otherwise the view asks for a restart.
@@ -877,7 +929,7 @@ impl SecondScrnHost {
         std::thread::spawn(move || {
             platform.reprobe();
             engine.refresh_platform();
-            let view = encoder_gpu_view(&platform, engine.snapshot().settings.encoder_gpu, started_with);
+            let view = encoder_gpu_view(&platform, engine.snapshot().settings.encoder_gpu_choice, started_with);
             extras.update(|x| x.encoder_gpu = view);
         });
     }

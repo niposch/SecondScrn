@@ -27,7 +27,8 @@ use secondscrn_transport::EncodedFrame;
 use crate::capture::{MonitorCapture, MonitorInfo};
 use crate::convert::{Converter, Nv12Target};
 use crate::d3d;
-use crate::encoder::{Encoder, EncoderDescriptor, EncoderEvent, EncoderSettings};
+use crate::encoder::{Encoder, EncoderDescriptor, EncoderEvent, EncoderSettings, Reference};
+use secondscrn_session::platform::FrameReference;
 
 const RING: usize = 4;
 const REFRESH_DELAY: Duration = Duration::from_millis(120);
@@ -47,6 +48,8 @@ enum Msg {
     Encoder(EncoderEvent),
     SetTarget(u64, u32),
     Keyframe,
+    MarkReference(u32),
+    Recover(u32),
     Stop,
 }
 
@@ -54,11 +57,22 @@ pub struct WindowsPipeline {
     tx: mpsc::Sender<Msg>,
     stats: Arc<Mutex<PipelineStats>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Losses are recovered from long-term references.
+    references: bool,
 }
 
 impl VideoPipeline for WindowsPipeline {
     fn request_keyframe(&self) {
         let _ = self.tx.send(Msg::Keyframe);
+    }
+    fn supports_references(&self) -> bool {
+        self.references
+    }
+    fn mark_reference(&self, slot: u32) {
+        let _ = self.tx.send(Msg::MarkReference(slot));
+    }
+    fn recover_from(&self, slot: u32) {
+        let _ = self.tx.send(Msg::Recover(slot));
     }
     fn set_target(&self, bitrate_bps: u64, max_fps: u32) {
         let _ = self.tx.send(Msg::SetTarget(bitrate_bps, max_fps));
@@ -97,7 +111,7 @@ impl WindowsPipeline {
             .spawn(move || {
                 let mut worker = match Worker::new(monitor, config, &encoder, tx2, stats2) {
                     Ok(w) => {
-                        let _ = ready_tx.send(Ok(()));
+                        let _ = ready_tx.send(Ok(w.references));
                         w
                     }
                     Err(e) => {
@@ -112,7 +126,10 @@ impl WindowsPipeline {
             })
             .map_err(|e| err(PlatformErrorKind::Other, e))?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(WindowsPipeline { tx, stats, thread: Some(thread) }),
+            Ok(Ok(references)) => {
+                tracing::info!(references, "loss recovery with long-term references");
+                Ok(WindowsPipeline { tx, stats, thread: Some(thread), references })
+            }
             Ok(Err(e)) => {
                 let _ = thread.join();
                 Err(e)
@@ -143,7 +160,12 @@ struct Worker {
     refreshes: u32,
     fps: u32,
     start: Instant,
-    in_flight: VecDeque<(i64, Instant)>,
+    /// Submitted frames: timestamp, capture time, reference use.
+    in_flight: VecDeque<(i64, Instant, Reference)>,
+    /// Losses are recovered from long-term references (verified encoder).
+    references: bool,
+    /// Reference use requested for the next frame.
+    pending_reference: Reference,
     capture_rate: RateCounter,
     encode_rate: RateCounter,
     encode_ms: Ewma,
@@ -185,7 +207,10 @@ impl Worker {
         )
         .map_err(|e| err(PlatformErrorKind::Encoder, format!("{}: {e:#}", desc.name)))?;
         let now = Instant::now();
+        let references = encoder.verified_ltr(desc);
         Ok(Worker {
+            references,
+            pending_reference: Reference::None,
             capture,
             converter,
             targets,
@@ -234,6 +259,18 @@ impl Worker {
                         self.force_keyframe = true;
                     }
                 }
+                Ok(Msg::MarkReference(slot)) => {
+                    if self.references && self.pending_reference == Reference::None {
+                        self.pending_reference = Reference::Mark(slot);
+                    }
+                }
+                Ok(Msg::Recover(slot)) => {
+                    if self.references {
+                        self.pending_reference = Reference::Recover(slot);
+                    } else {
+                        self.force_keyframe = true;
+                    }
+                }
                 Ok(Msg::SetTarget(bps, fps)) => {
                     // The encoder spends `bitrate / configured fps` per frame.
                     // Scaling that up when content changes less often (30 fps
@@ -253,8 +290,8 @@ impl Worker {
                 Ok(Msg::Encoder(EncoderEvent::Error(e))) => return Err(err(PlatformErrorKind::Encoder, e)),
                 Err(RecvTimeoutError::Timeout) => {}
             }
-            self.maybe_submit()?;
-            if last_stats.elapsed() >= Duration::from_millis(500) {
+            self.maybe_submit(sink)?;
+            if last_stats.elapsed() >= Duration::from_millis(200) {
                 last_stats = Instant::now();
                 self.publish_stats();
             }
@@ -272,7 +309,7 @@ impl Worker {
         last + KEEPALIVE
     }
 
-    fn maybe_submit(&mut self) -> Result<(), PlatformError> {
+    fn maybe_submit(&mut self, sink: &dyn PipelineSink) -> Result<(), PlatformError> {
         if self.need_input == 0 {
             return Ok(());
         }
@@ -287,6 +324,13 @@ impl Worker {
                 Some(t) if now.saturating_duration_since(t) < iv => t + iv,
                 _ => now + iv, // idle before: restart the clock
             });
+            // The network is behind: a frame encoded now would only arrive
+            // late. Skip this tick; the next one shows the newest picture.
+            // Not a keyframe or recovery frame: the tablet waits for it.
+            if !self.urgent() && sink.backlog() > iv {
+                self.stats.lock().unwrap_or_else(|e| e.into_inner()).frames_skipped += 1;
+                return Ok(());
+            }
             self.pending_capture = false;
             if let Some(frame) = self.capture.latest().map_err(|e| err(PlatformErrorKind::Capture, e))? {
                 let (w, h) = (self.targets[0].width, self.targets[0].height);
@@ -309,22 +353,34 @@ impl Worker {
         }
         let Some(slot) = self.last_slot else { return Ok(()) };
         let since = since.unwrap_or(Duration::MAX);
-        if (self.refreshes < REFRESH_COUNT && since >= REFRESH_DELAY) || since >= KEEPALIVE || self.force_keyframe {
+        if (self.refreshes < REFRESH_COUNT && since >= REFRESH_DELAY) || since >= KEEPALIVE || self.urgent() {
             self.refreshes = self.refreshes.saturating_add(1);
             return self.submit(slot, now);
         }
         Ok(())
     }
 
+    /// A keyframe or recovery frame is due: it goes out right away.
+    fn urgent(&self) -> bool {
+        self.force_keyframe || matches!(self.pending_reference, Reference::Recover(_))
+    }
+
     fn submit(&mut self, slot: usize, now: Instant) -> Result<(), PlatformError> {
         let ts = (now.duration_since(self.start).as_nanos() / 100) as i64;
         let key = std::mem::take(&mut self.force_keyframe);
+        let pending = std::mem::take(&mut self.pending_reference);
+        // A keyframe empties the decoder's references; it becomes the first.
+        let reference = match () {
+            _ if key && self.references => Reference::Mark(0),
+            _ if key => Reference::None,
+            _ => pending,
+        };
         self.encoder
-            .encode(&self.targets[slot].texture, ts, key)
+            .encode(&self.targets[slot].texture, ts, key, reference)
             .map_err(|e| err(PlatformErrorKind::Encoder, format!("{e:#}")))?;
         self.need_input -= 1;
         self.last_submit = Some(now);
-        self.in_flight.push_back((ts, now));
+        self.in_flight.push_back((ts, now, reference));
         if self.in_flight.len() > 16 {
             self.in_flight.pop_front();
         }
@@ -341,11 +397,13 @@ impl Worker {
         };
         let now = Instant::now();
         let mut capture_time = now;
-        while let Some((ts, t)) = self.in_flight.front().copied() {
+        let mut reference = Reference::None;
+        while let Some((ts, t, r)) = self.in_flight.front().copied() {
             if ts <= out.time_100ns {
                 self.in_flight.pop_front();
                 if ts == out.time_100ns {
                     capture_time = t;
+                    reference = r;
                     self.encode_ms.add(now.duration_since(t).as_secs_f32() * 1000.0);
                 }
             } else {
@@ -362,6 +420,16 @@ impl Worker {
             // Network queue full: the next frame must be an IDR.
             self.force_keyframe = true;
             self.stats.lock().unwrap_or_else(|e| e.into_inner()).frames_skipped += 1;
+            return Ok(());
+        }
+        let used = match reference {
+            Reference::Mark(slot) => Some(FrameReference::Marked { slot, keyframe: out.keyframe }),
+            Reference::Recover(slot) if !out.keyframe => Some(FrameReference::Recovery { slot }),
+            _ if out.keyframe => Some(FrameReference::Keyframe),
+            _ => None,
+        };
+        if let Some(used) = used {
+            sink.on_reference(capture_time, used);
         }
         Ok(())
     }

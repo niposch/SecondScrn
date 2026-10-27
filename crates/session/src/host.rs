@@ -17,7 +17,7 @@ use secondscrn_security::pairing::{HostPairing, normalize_pin};
 use secondscrn_security::tls::{PAIRING_EXPORTER_LABEL, peer_fingerprint, server_config};
 use secondscrn_security::trust::{TrustStore, TrustedPeer, now_unix};
 use secondscrn_security::{Fingerprint, Identity, SecretProtector};
-use secondscrn_transport::{FrameSender, InterfacePolicy, PendingSender, SenderConfig, TransportEvent};
+use secondscrn_transport::{FrameSender, Impairment, InterfacePolicy, PendingSender, SenderConfig, TransportEvent};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -25,7 +25,7 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::SessionError;
 use crate::adapt::{BitrateController, BitratePolicy};
-use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STEP_TIMEOUT};
+use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STATS_INTERVAL, STEP_TIMEOUT};
 use crate::negotiate::{NegotiationError, NegotiationInput, negotiate};
 use crate::platform::{
     DisplayInfo, DisplayLease, DisplayPlan, DriverStatus, HostPlatform, PipelineSink, PlatformError, VideoPipeline,
@@ -64,6 +64,7 @@ enum SessionCommand {
     SetPreset(QualityPreset),
     SetResolution(u32),
     SetFrameRate(u32),
+    SetImpairment(Option<Impairment>),
 }
 
 /// Why the stream is about to change.
@@ -97,6 +98,7 @@ struct HostState {
     pairing: Option<PendingPairing>,
     pairing_attempts: VecDeque<Instant>,
     last_error: Option<String>,
+    version_mismatch: Option<crate::snapshot::VersionMismatch>,
 }
 
 struct HostInner {
@@ -121,6 +123,8 @@ struct HostInner {
     announcer: Mutex<Option<secondscrn_discovery::Announcer>>,
     ids: AtomicU64,
     pending_connections: Arc<tokio::sync::Semaphore>,
+    /// Simulated network trouble on the media path (tests, diagnostics).
+    impairment: Mutex<Option<Impairment>>,
 }
 
 /// The running host. Cheap to share; all methods are synchronous and safe to
@@ -184,6 +188,7 @@ impl HostEngine {
             announcer: Mutex::new(None),
             ids: AtomicU64::new(1),
             pending_connections: Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_CONNECTIONS)),
+            impairment: Mutex::new(None),
         });
         tracing::info!(fingerprint = %inner.identity.fingerprint(), "host identity loaded");
         inner.restart_listener();
@@ -303,9 +308,43 @@ impl HostEngine {
         Ok(())
     }
 
+    /// Applies `preset` to the connected tablet and remembers it for that
+    /// tablet, as choosing it on the tablet does. Choosing its current preset
+    /// again undoes resolution and frame-rate changes.
+    pub fn set_session_preset(&self, preset: QualityPreset) -> Result<(), SessionError> {
+        let st = lock(&self.inner.state);
+        let s = st.session.as_ref().ok_or(SessionError::NotFound("connected tablet"))?;
+        {
+            let mut settings = lock(&self.inner.settings);
+            let mut prefs = settings.device(&s.fingerprint.to_hex());
+            prefs.preset = Some(preset);
+            settings.devices.insert(s.fingerprint.to_hex(), prefs);
+        }
+        let _ = s.commands.send(SessionCommand::SetPreset(preset));
+        drop(st);
+        self.inner.save_settings();
+        self.inner.publish();
+        Ok(())
+    }
+
     /// Ends the current session (if any). The tablet will not auto-reconnect.
     pub fn disconnect(&self) {
         self.end_session(false);
+    }
+
+    /// Simulates network trouble on the media path from this PC (tests and
+    /// diagnostics): applies to the current and later sessions.
+    pub fn set_network_impairment(&self, impairment: Option<Impairment>) {
+        *lock(&self.inner.impairment) = impairment.clone();
+        if let Some(s) = &lock(&self.inner.state).session {
+            let _ = s.commands.send(SessionCommand::SetImpairment(impairment));
+        }
+    }
+
+    /// Ends the current session and has the tablet connect again (settings
+    /// that apply to new connections then take effect).
+    pub fn reconnect(&self) {
+        self.end_session(true);
     }
 
     fn end_session(&self, reconnect: bool) {
@@ -315,13 +354,15 @@ impl HostEngine {
         }
     }
 
+    /// Sets the default preset: for tablets without one of their own.
     pub fn set_preset(&self, preset: QualityPreset) {
         lock(&self.inner.settings).preset = preset;
         self.inner.save_settings();
         let st = lock(&self.inner.state);
-        if let Some(s) = &st.session {
-            let device_preset = lock(&self.inner.settings).device(&s.fingerprint.to_hex()).preset;
-            let _ = s.commands.send(SessionCommand::SetPreset(device_preset.unwrap_or(preset)));
+        if let Some(s) = &st.session
+            && lock(&self.inner.settings).device(&s.fingerprint.to_hex()).preset.is_none()
+        {
+            let _ = s.commands.send(SessionCommand::SetPreset(preset));
         }
         drop(st);
         self.inner.publish();
@@ -342,7 +383,11 @@ impl HostEngine {
                 drop(s);
                 let st = lock(&self.inner.state);
                 if let Some(sess) = &st.session {
-                    let _ = sess.commands.send(SessionCommand::SetPreset(preset));
+                    // Only tablets without a preset of their own follow it.
+                    let own = lock(&self.inner.settings).device(&sess.fingerprint.to_hex()).preset;
+                    if own.is_none() {
+                        let _ = sess.commands.send(SessionCommand::SetPreset(preset));
+                    }
                 }
             }
             restart
@@ -413,6 +458,7 @@ fn placeholder_snapshot(settings: &HostSettings) -> HostSnapshot {
         driver: DriverStatus::NotApplicable,
         encoders: Vec::new(),
         last_error: None,
+        version_mismatch: None,
         settings: settings.clone(),
     }
 }
@@ -491,6 +537,7 @@ impl HostInner {
             driver: lock(&self.driver).clone(),
             encoders: lock(&self.encoders).clone(),
             last_error: st.last_error.clone(),
+            version_mismatch: st.version_mismatch.clone(),
             settings,
         };
         drop(st);
@@ -619,19 +666,6 @@ async fn handle_connection(
     };
     let mut ch: HostChannel = ControlChannel::new(tls);
 
-    let (device, intent) = match ch.recv_timeout(STEP_TIMEOUT, "hello").await? {
-        ClientMessage::Hello { protocol_version, device, intent } => {
-            if protocol_version != PROTOCOL_VERSION {
-                ch.send(&HostMessage::Rejected { reason: RejectReason::IncompatibleVersion }).await?;
-                return Err(SessionError::Rejected(RejectReason::IncompatibleVersion));
-            }
-            (sanitize_device(device), intent)
-        }
-        _ => return Err(SessionError::Protocol("expected hello")),
-    };
-    tracing::info!(%peer, device = %device.name, fingerprint = %fp, ?intent, "tablet connected");
-
-    let trusted = lock(&inner.trust).is_trusted(&fp);
     let hello = HostMessage::Hello {
         protocol_version: PROTOCOL_VERSION,
         host: DeviceInfo {
@@ -640,12 +674,47 @@ async fn handle_connection(
             app_version: inner.app_version.clone(),
         },
     };
+    let (device, intent) = match ch.recv_timeout(STEP_TIMEOUT, "hello").await? {
+        ClientMessage::Hello { protocol_version, device, intent } => {
+            let device = sanitize_device(device);
+            let ours = (inner.app_version.as_str(), PROTOCOL_VERSION);
+            if !secondscrn_protocol::versions_compatible(ours, (&device.app_version, protocol_version)) {
+                tracing::info!(%peer, device = %device.name, tablet = %device.app_version, "tablet runs another app version");
+                lock(&inner.state).version_mismatch = Some(crate::snapshot::VersionMismatch {
+                    device_name: device.name.clone(),
+                    tablet_version: device.app_version.clone(),
+                    host_version: inner.app_version.clone(),
+                });
+                inner.publish();
+                // Tablets from 0.0.2 on learn the PC's version from its
+                // hello; older ones only know `IncompatibleVersion`.
+                let reason = if protocol_version >= 3 {
+                    ch.send(&hello).await?;
+                    RejectReason::VersionMismatch
+                } else {
+                    RejectReason::IncompatibleVersion
+                };
+                ch.send(&HostMessage::Rejected { reason }).await?;
+                return Err(SessionError::Rejected(reason));
+            }
+            (device, intent)
+        }
+        _ => return Err(SessionError::Protocol("expected hello")),
+    };
+    tracing::info!(%peer, device = %device.name, fingerprint = %fp, ?intent, "tablet connected");
+
+    let trusted = lock(&inner.trust).is_trusted(&fp);
     match (intent, trusted) {
         (Intent::Connect, false) => {
             ch.send(&HostMessage::Rejected { reason: RejectReason::NotPaired }).await?;
             return Err(SessionError::Rejected(RejectReason::NotPaired));
         }
-        (Intent::Connect, true) => ch.send(&hello).await?,
+        (Intent::Connect, true) => {
+            if lock(&inner.state).version_mismatch.take().is_some() {
+                inner.publish();
+            }
+            ch.send(&hello).await?
+        }
         (Intent::Pair, _) => {
             ch.send(&hello).await?;
             pair(&inner, &mut ch, fp, &exporter, &device, peer).await?;
@@ -796,11 +865,19 @@ async fn wait_closed(ch: &mut HostChannel) {
 struct Sink {
     frames: FrameSender,
     errors: mpsc::UnboundedSender<PlatformError>,
+    /// Reference use of sent frames, by RTP time.
+    references: mpsc::UnboundedSender<(u64, crate::platform::FrameReference)>,
 }
 
 impl PipelineSink for Sink {
     fn on_frame(&self, frame: secondscrn_transport::EncodedFrame) -> bool {
         self.frames.send_frame(frame)
+    }
+    fn backlog(&self) -> Duration {
+        self.frames.backlog()
+    }
+    fn on_reference(&self, captured: Instant, reference: crate::platform::FrameReference) {
+        let _ = self.references.send((self.frames.rtp_time(captured), reference));
     }
     fn on_error(&self, error: PlatformError) {
         let _ = self.errors.send(error);
@@ -904,6 +981,9 @@ async fn run_session(
                     display: None,
                     resolutions: Vec::new(),
                     frame_rates: Vec::new(),
+                    preset: QualityPreset::Automatic,
+                    custom: false,
+                    network_limited: false,
                     metrics: HostMetrics::default(),
                     connected_since: now_unix(),
                 },
@@ -954,9 +1034,9 @@ async fn stream(
         let s = lock(&inner.settings).clone();
         let prefs = s.device(&fp.to_hex());
         let preset = prefs.preset.unwrap_or(s.preset);
-        let (default_scale, default_fps) = preset.display_defaults(&display_req);
-        let fps = if preset == QualityPreset::Automatic { s.max_fps } else { default_fps };
-        (s.clone(), preset, prefs.resolution_scale.unwrap_or(default_scale), prefs.max_fps.unwrap_or(fps))
+        let (default_scale, default_fps) = preset_defaults(preset, &display_req, s.fps_limit);
+        let fps = limit_fps(prefs.max_fps.unwrap_or(default_fps), s.fps_limit);
+        (s.clone(), preset, prefs.resolution_scale.unwrap_or(default_scale), fps)
     };
     // The tablet reports its panel; the monitor is that panel at `scale`.
     let mut native = display_req;
@@ -1009,11 +1089,13 @@ async fn stream(
     config.scale_percent = native.scale_of(display.width, display.height);
     config.max_fps = capped_by_refresh(config.max_fps, &display);
     let mut last_refresh_fix: Option<Instant> = None;
+    let custom = is_custom(preset, &config, fps_cap, &native, settings.fps_limit);
     inner.update_session(id, |s| {
         s.stream = Some(config.clone());
         s.display = Some(display.clone());
         s.resolutions = native.resolution_options();
-        s.frame_rates = native.frame_rate_options();
+        s.frame_rates = offered_rates(&native, settings.fps_limit);
+        (s.preset, s.custom) = (preset, custom);
     });
 
     // --- WebRTC
@@ -1022,6 +1104,10 @@ async fn stream(
         BitratePolicy::for_stream(c.codec, c.width, c.height, c.max_fps, p, user_max)
     };
     let mut controller = BitrateController::new(policy_for(&config, preset));
+    // Since when the budget is below what the stream needs, and whether the
+    // user was told.
+    let (mut short_since, mut network_limited): (Option<Instant>, bool) = (None, false);
+    let mut delay_meter = crate::adapt::DelayMeter::default();
     config.initial_bitrate_bps = controller.current().bitrate_bps;
     let (pending, offer) =
         PendingSender::create(SenderConfig { codec: config.codec, interfaces: inner.interfaces.clone() }).await?;
@@ -1036,17 +1122,20 @@ async fn stream(
         }
     };
     let mut media = pending.accept_answer(&answer)?;
+    media.set_impairment(lock(&inner.impairment).clone());
 
     // --- Pipeline
     let (err_tx, mut pipeline_errors) = mpsc::unbounded_channel();
+    let (ref_tx, mut reference_events) = mpsc::unbounded_channel();
     let start_pipeline = |display: DisplayInfo,
                           config: StreamConfig,
                           target: crate::adapt::EncoderTarget,
                           frames: FrameSender,
                           errors: mpsc::UnboundedSender<PlatformError>| {
         let platform = inner.platform.clone();
+        let references = ref_tx.clone();
         tokio::task::spawn_blocking(move || {
-            let p = platform.start_video(&display, &config, Box::new(Sink { frames, errors }))?;
+            let p = platform.start_video(&display, &config, Box::new(Sink { frames, errors, references }))?;
             p.set_target(target.bitrate_bps, target.fps);
             Ok::<_, PlatformError>(p)
         })
@@ -1055,6 +1144,8 @@ async fn stream(
         start_pipeline(display.clone(), config.clone(), controller.current(), media.frame_sender(), err_tx.clone())
             .await
             .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
+    let mut references = crate::recovery::References::new(pipeline.supports_references());
+    tracing::info!(enabled = references.enabled(), "loss recovery with long-term references");
 
     let shared_display = Arc::new(Mutex::new(display.clone()));
     let input_tx = spawn_input_thread(inner.platform.clone(), shared_display.clone());
@@ -1065,6 +1156,7 @@ async fn stream(
     }
 
     let mut ping = tokio::time::interval(PING_INTERVAL);
+    let mut stats_tick = tokio::time::interval(STATS_INTERVAL);
     let mut last_rx = Instant::now();
     let mut nonce = 0u64;
     let mut restarts = 0u32;
@@ -1085,14 +1177,37 @@ async fn stream(
                 last_rx = Instant::now();
                 match msg {
                     ClientMessage::Input { event } => { let _ = input_tx.send(event); }
-                    ClientMessage::RequestKeyframe => pipeline.request_keyframe(),
+                    ClientMessage::RequestKeyframe => recover(&mut references, pipeline.as_ref()),
                     ClientMessage::Stats { stats } => metrics.client = Some(stats),
+                    ClientMessage::FrameTimings { frames, intact } => {
+                        frames.iter().for_each(|f| delay_meter.add(f));
+                        if let Some((from, to)) = intact {
+                            references.on_intact(from, to);
+                        }
+                        let sender = media.frame_sender();
+                        if let Some(latest) = frames.iter().map(|f| f.rtp_time).max() {
+                            sender.acknowledge(latest);
+                            references.on_arrived(latest);
+                        }
+                        if let Some(queued) = delay_meter.queue_delay() {
+                            metrics.queue_delay_ms = Some(queued.as_secs_f32() * 1000.0);
+                            let (delivered, sent) = (delay_meter.delivery_bps(), delay_meter.send_bps());
+                            if let Some(t) = controller.on_delay(queued, delivered, sent, Instant::now()) {
+                                tracing::debug!(?t, ?queued, ?delivered, ?sent, budget = controller.budget_bps(), "encoder target");
+                                pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
+                            }
+                            metrics.bitrate_estimate_bps = Some(controller.budget_bps());
+                            if controller.take_rebase() {
+                                tracing::info!(?queued, "raised delay is the path's, not a queue");
+                                delay_meter.rebase();
+                            }
+                        }
+                    }
                     ClientMessage::Ping { nonce } => ch.send(&HostMessage::Pong { nonce }).await?,
                     ClientMessage::Pong { .. } => {}
                     ClientMessage::SetPreset { preset: p } => {
-                        if p != preset {
-                            change = apply_preset(inner, &fp, p, &native, &mut scale, &mut fps_cap);
-                        }
+                        // Choosing the current preset again undoes changes to it.
+                        change = apply_preset(inner, &fp, p, &native, &mut scale, &mut fps_cap);
                         {
                             let mut settings = lock(&inner.settings);
                             let mut prefs = settings.device(&fp.to_hex());
@@ -1103,6 +1218,10 @@ async fn stream(
                         preset = p;
                         if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
                             pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
+                        }
+                        if change.is_none() {
+                            let custom = is_custom(preset, &config, fps_cap, &native, settings.fps_limit);
+                            inner.update_session(id, |s| (s.preset, s.custom) = (preset, custom));
                         }
                     }
                     ClientMessage::DisplayChanged { display: req } => {
@@ -1130,7 +1249,7 @@ async fn stream(
                         }
                     }
                     ClientMessage::SetFrameRate { fps } => {
-                        fps_cap = fps.clamp(10, 240);
+                        fps_cap = limit_fps(fps.clamp(10, 240), settings.fps_limit);
                         inner.remember_fps(&fp, fps_cap);
                         change = Some(DisplayChange::Plan);
                     }
@@ -1155,7 +1274,7 @@ async fn stream(
                         inner.update_session(id, |s| s.phase = SessionPhase::Streaming);
                     }
                     TransportEvent::BitrateEstimate(_) => {}
-                    TransportEvent::KeyframeRequested => pipeline.request_keyframe(),
+                    TransportEvent::KeyframeRequested => recover(&mut references, pipeline.as_ref()),
                     TransportEvent::Stats(s) => {
                         let now = Instant::now();
                         if let Some((b, t)) = last_bytes {
@@ -1180,6 +1299,12 @@ async fn stream(
                     TransportEvent::Closed { reason } => break Err(SessionError::Transport(reason)),
                 }
             }
+            Some((rtp, reference)) = reference_events.recv() => {
+                references.on_encoded(rtp, reference);
+                if let crate::platform::FrameReference::Recovery { .. } = reference {
+                    ch.send(&HostMessage::Recovery { rtp_time: rtp }).await?;
+                }
+            }
             Some(err) = pipeline_errors.recv() => {
                 if mode_changed(lease.as_ref(), &config) {
                     // Expected: capture stops when the monitor changes size.
@@ -1198,41 +1323,70 @@ async fn stream(
                     pipeline = start_pipeline(display.clone(), config.clone(), slowdown.apply(controller.current()), media.frame_sender(), err_tx.clone())
                         .await
                         .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
+                    references = crate::recovery::References::new(pipeline.supports_references());
                 }
             }
             cmd = commands.recv() => match cmd {
                 None => break Ok(false),
                 Some(SessionCommand::Disconnect { reconnect }) => break Ok(reconnect),
                 Some(SessionCommand::SetPreset(p)) => {
-                    if p != preset {
-                        change = apply_preset(inner, &fp, p, &native, &mut scale, &mut fps_cap);
-                    }
+                    // Choosing the current preset again undoes changes to it.
+                    change = apply_preset(inner, &fp, p, &native, &mut scale, &mut fps_cap);
                     preset = p;
                     if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
                         pipeline.set_target(t.bitrate_bps, slowdown.limit(t.fps));
+                    }
+                    if change.is_none() {
+                        let custom = is_custom(preset, &config, fps_cap, &native, settings.fps_limit);
+                        inner.update_session(id, |s| (s.preset, s.custom) = (preset, custom));
                     }
                 }
                 Some(SessionCommand::SetResolution(p)) => {
                     scale = p;
                     change = Some(DisplayChange::Plan);
                 }
+                Some(SessionCommand::SetImpairment(i)) => media.set_impairment(i),
                 Some(SessionCommand::SetFrameRate(f)) => {
-                    fps_cap = f;
+                    fps_cap = limit_fps(f, settings.fps_limit);
                     change = Some(DisplayChange::Plan);
                 }
             },
-            _ = ping.tick() => {
-                if last_rx.elapsed() > PEER_TIMEOUT {
-                    break Err(SessionError::Timeout("tablet stopped responding"));
+            _ = stats_tick.tick() => {
+                if let Some(slot) = references.due_mark(Instant::now()) {
+                    pipeline.mark_reference(slot);
                 }
-                nonce += 1;
-                ch.send(&HostMessage::Ping { nonce }).await?;
+                // The resolution and frame rate the user chose don't fit the
+                // network (fewer frames are sent): say so, the user decides.
+                let now = Instant::now();
+                let short = controller.budget_bps() < controller.policy().floor;
+                if !short {
+                    short_since = None;
+                } else if short_since.is_none() {
+                    short_since = Some(now);
+                }
+                let limited = short_since.is_some_and(|t| now.duration_since(t) >= LIMITED_AFTER);
+                if limited != network_limited {
+                    network_limited = limited;
+                    tracing::info!(limited, budget = controller.budget_bps(), "network limits the stream");
+                    ch.send(&HostMessage::NetworkLimited { limited }).await?;
+                    inner.update_session(id, |s| s.network_limited = limited);
+                }
                 metrics.pipeline = pipeline.stats();
                 metrics.frames_dropped_network = media.frames_dropped();
                 let target_fps = controller.current().fps;
                 metrics.health = LinkHealth::assess(metrics.rtt_ms, metrics.loss, metrics.pipeline.encode_fps, target_fps);
                 let m = metrics.clone();
                 inner.update_session(id, |s| s.metrics = m);
+            }
+            _ = ping.tick() => {
+                if last_rx.elapsed() > PEER_TIMEOUT {
+                    break Err(SessionError::Timeout("tablet stopped responding"));
+                }
+                nonce += 1;
+                ch.send(&HostMessage::Ping { nonce }).await?;
+                if network_limited {
+                    ch.send(&HostMessage::NetworkLimited { limited: true }).await?;
+                }
                 if mode_changed(lease.as_ref(), &config) {
                     change = Some(DisplayChange::External);
                 } else if let Some(hz) = refresh_changed(lease.as_ref(), &display) {
@@ -1317,11 +1471,14 @@ async fn stream(
             )
             .await
             .map_err(|_| SessionError::Protocol("pipeline task panicked"))??;
+            references = crate::recovery::References::new(pipeline.supports_references());
+            let custom = is_custom(preset, &config, fps_cap, &native, settings.fps_limit);
             inner.update_session(id, |s| {
                 s.stream = Some(config.clone());
                 s.display = Some(display.clone());
                 s.resolutions = native.resolution_options();
-                s.frame_rates = native.frame_rate_options();
+                s.frame_rates = offered_rates(&native, settings.fps_limit);
+                (s.preset, s.custom) = (preset, custom);
             });
         }
     };
@@ -1348,7 +1505,8 @@ fn apply_preset(
     scale: &mut u32,
     fps_cap: &mut u32,
 ) -> Option<DisplayChange> {
-    let (s, f) = preset.display_defaults(native);
+    let limit = lock(&inner.settings).fps_limit;
+    let (s, f) = preset_defaults(preset, native, limit);
     inner.remember_scale(fp, s);
     inner.remember_fps(fp, f);
     if (s, f) == (*scale, *fps_cap) {
@@ -1358,6 +1516,36 @@ fn apply_preset(
     *scale = s;
     *fps_cap = f;
     Some(DisplayChange::Plan)
+}
+
+/// A preset's resolution (scale) and frame rate for `panel`, within the
+/// user's frame-rate limit.
+fn preset_defaults(preset: QualityPreset, panel: &DisplayRequest, limit: Option<u32>) -> (u32, u32) {
+    let (scale, fps) = preset.display_defaults(panel);
+    (scale, limit_fps(fps, limit))
+}
+
+fn limit_fps(fps: u32, limit: Option<u32>) -> u32 {
+    limit.map_or(fps, |l| fps.min(l))
+}
+
+/// The panel's frame rates up to the limit (at least the lowest).
+fn offered_rates(panel: &DisplayRequest, limit: Option<u32>) -> Vec<u32> {
+    let all = panel.frame_rate_options();
+    let within: Vec<u32> = all.iter().copied().filter(|r| limit.is_none_or(|l| *r <= l)).collect();
+    if within.is_empty() { all.into_iter().take(1).collect() } else { within }
+}
+
+/// The stream differs from what `preset` sets: resolution or frame rate were
+/// changed on the PC, the tablet or in Windows.
+fn is_custom(
+    preset: QualityPreset,
+    config: &StreamConfig,
+    fps_cap: u32,
+    panel: &DisplayRequest,
+    limit: Option<u32>,
+) -> bool {
+    preset_defaults(preset, panel, limit) != (config.scale_percent, fps_cap)
 }
 
 /// The monitor for `native` at `scale`, refreshing at the stream's frame rate
@@ -1425,6 +1613,22 @@ impl Slowdown {
 fn mode_changed(lease: &dyn DisplayLease, config: &StreamConfig) -> bool {
     let d = lease.info();
     (d.width, d.height) != (config.width, config.height)
+}
+
+/// The budget stays below what the stream needs this long before the user
+/// is told (short dips are adaptation at work).
+const LIMITED_AFTER: Duration = Duration::from_secs(5);
+
+/// Loss reported by the tablet: recover from a confirmed reference picture
+/// if there is one, otherwise with a keyframe.
+fn recover(references: &mut crate::recovery::References, pipeline: &dyn VideoPipeline) {
+    let action = references.on_loss(Instant::now());
+    tracing::debug!(?action, ?references, "loss reported");
+    match action {
+        Some(crate::recovery::Action::Recover(slot)) => pipeline.recover_from(slot),
+        Some(crate::recovery::Action::Keyframe) => pipeline.request_keyframe(),
+        None => {}
+    }
 }
 
 /// At most one attempt per this interval to restore a virtual monitor's

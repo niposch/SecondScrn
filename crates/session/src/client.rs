@@ -1,6 +1,7 @@
 //! Client (tablet) engine: discovery, pairing, connection, decoding and
 //! automatic reconnection. Publishes [`ClientSnapshot`]s for the UI.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -9,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use secondscrn_diagnostics::LogBuffer;
 use secondscrn_protocol::{
-    ALPN, ClientMessage, ClientStats, CodecCapability, DisplayRequest, HostMessage, InputEvent, Intent, Orientation,
-    PROTOCOL_VERSION, PenAction, PointerAction, PointerButton, QualityPreset, RejectReason, StreamConfig, TouchContact,
+    ALPN, ClientMessage, ClientStats, CodecCapability, DisplayRequest, FrameTiming, HostMessage, InputEvent, Intent,
+    Orientation, PROTOCOL_VERSION, PenAction, PointerAction, PointerButton, QualityPreset, RejectReason, StreamConfig,
+    TouchContact,
 };
 use secondscrn_security::pairing::{ClientPairing, generate_pin};
 use secondscrn_security::tls::{PAIRING_EXPORTER_LABEL, client_config, peer_fingerprint, server_name};
@@ -24,7 +26,7 @@ use tokio_rustls::TlsConnector;
 
 use crate::SessionError;
 use crate::backoff::Backoff;
-use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STEP_TIMEOUT};
+use crate::channel::{ControlChannel, PEER_TIMEOUT, PING_INTERVAL, STATS_INTERVAL, STEP_TIMEOUT};
 use crate::platform::{ClientPlatform, DecodeOutcome, DecoderStats, PlatformError, UiScale};
 use crate::settings::{self, ClientSettings, KnownHost};
 use crate::snapshot::{
@@ -34,6 +36,12 @@ use crate::snapshot::{
 /// How long the user has to type the PIN on the PC.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(130);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+/// How often received frames are reported to the PC (latency feedback).
+const FEEDBACK_INTERVAL: Duration = Duration::from_millis(50);
+/// A request for a recovery or keyframe is repeated after this long.
+const KEYFRAME_REQUEST_REPEAT: Duration = Duration::from_millis(300);
+/// The tablet's render rate is measured over about this long.
+const RENDER_RATE_WINDOW: Duration = Duration::from_millis(500);
 /// Frames queued for the decoder. Frames arrive in bursts (e.g. after a
 /// retransmission) and dropping one breaks the reference chain, which costs a
 /// keyframe: at tablet resolution a burst large enough to cause the next
@@ -90,6 +98,15 @@ impl WarningTracker {
         self.behind.push_back(now);
         if self.behind.len() >= 2 {
             self.warning = Some((PerformanceWarning::Decoder, now));
+        }
+    }
+
+    /// The PC reports whether the network carries the chosen quality.
+    fn network_limited(&mut self, now: Instant, limited: bool) {
+        if limited {
+            self.warning = Some((PerformanceWarning::Bandwidth, now));
+        } else if self.warning.is_some_and(|(w, _)| w == PerformanceWarning::Bandwidth) {
+            self.warning = None;
         }
     }
 
@@ -571,13 +588,33 @@ impl SessionError {
     fn is_fatal(&self) -> bool {
         match self {
             SessionError::Rejected(r) => !matches!(r, RejectReason::InternalError | RejectReason::DisplayUnavailable),
-            SessionError::HostIdentityChanged | SessionError::PairingFailed | SessionError::InvalidInput(_) => true,
+            SessionError::HostIdentityChanged
+            | SessionError::PairingFailed
+            | SessionError::InvalidInput(_)
+            | SessionError::VersionMismatch { .. } => true,
             _ => false,
         }
     }
 
     fn user_message(&self) -> String {
         match self {
+            SessionError::VersionMismatch { host, tablet } => {
+                match secondscrn_protocol::compare_versions(tablet, host) {
+                    Some(std::cmp::Ordering::Less) => format!(
+                        "The PC runs SecondScrn {host}, this tablet {tablet}. Install SecondScrn {host} on this tablet."
+                    ),
+                    Some(std::cmp::Ordering::Greater) => format!(
+                        "The PC runs SecondScrn {host}, this tablet {tablet}. Install SecondScrn {tablet} on the PC \
+                         (Settings → Check now)."
+                    ),
+                    _ => {
+                        format!("The PC runs SecondScrn {host}, this tablet {tablet}. Both must run the same version.")
+                    }
+                }
+            }
+            SessionError::Rejected(RejectReason::IncompatibleVersion) => "The PC runs another SecondScrn version. \
+                Update both apps to the same version."
+                .into(),
             SessionError::Rejected(RejectReason::NotPaired) => {
                 "This tablet is no longer paired with the PC. Pair again to connect.".into()
             }
@@ -619,6 +656,7 @@ async fn connection_loop(inner: Arc<ClientInner>, target: ConnectTarget, mut can
                 inner.set_phase(ClientPhase::Failed {
                     message: "The PC ended the session.".into(),
                     needs_pairing: false,
+                    update_to: None,
                 });
                 return;
             }
@@ -630,7 +668,17 @@ async fn connection_loop(inner: Arc<ClientInner>, target: ConnectTarget, mut can
                         e,
                         SessionError::Rejected(RejectReason::NotPaired) | SessionError::HostIdentityChanged
                     );
-                    inner.set_phase(ClientPhase::Failed { message: e.user_message(), needs_pairing });
+                    // This app is the older one: offer exactly the PC's version.
+                    let update_to = match &e {
+                        SessionError::VersionMismatch { host, tablet }
+                            if secondscrn_protocol::compare_versions(tablet, host)
+                                == Some(std::cmp::Ordering::Less) =>
+                        {
+                            Some(host.clone())
+                        }
+                        _ => None,
+                    };
+                    inner.set_phase(ClientPhase::Failed { message: e.user_message(), needs_pairing, update_to });
                     return;
                 }
                 if streamed {
@@ -740,9 +788,19 @@ async fn run_connection(
     };
     let intent = if pinned.is_some() { Intent::Connect } else { Intent::Pair };
     ch.send(&ClientMessage::Hello { protocol_version: PROTOCOL_VERSION, device, intent }).await?;
+    let ours = inner.app_version.clone();
     let host_info = expect(&mut ch, STEP_TIMEOUT, "host hello", |m| match m {
-        HostMessage::Hello { host, protocol_version } if protocol_version == PROTOCOL_VERSION => Some(Ok(host)),
-        HostMessage::Hello { .. } => Some(Err(SessionError::Rejected(RejectReason::IncompatibleVersion))),
+        HostMessage::Hello { host, protocol_version }
+            if secondscrn_protocol::versions_compatible(
+                (&ours, PROTOCOL_VERSION),
+                (&host.app_version, protocol_version),
+            ) =>
+        {
+            Some(Ok(host))
+        }
+        HostMessage::Hello { host, .. } => {
+            Some(Err(SessionError::VersionMismatch { host: host.app_version, tablet: ours.clone() }))
+        }
         _ => None,
     })
     .await??;
@@ -857,8 +915,9 @@ async fn run_connection(
     let mut last_slowdown: Option<Instant> = None;
     let mut warnings = WarningTracker::default();
     let mut last_rtp: Option<u64> = None;
-    // Render rate from frame deltas between (2 s apart) stats ticks.
-    let mut last_render: (u64, Instant) = (0, Instant::now());
+    // Rendered-frame counts of recent stats ticks, for the render rate.
+    let mut renders: VecDeque<(u64, Instant)> = VecDeque::new();
+    let mut stats_tick = tokio::time::interval(STATS_INTERVAL);
     let mut last_bytes: Option<(u64, Instant)> = None;
     let mut metrics = ClientMetrics::default();
     let mut ping_sent: Option<(u64, Instant)> = None;
@@ -866,6 +925,11 @@ async fn run_connection(
     let mut rtt_observed: Option<Instant> = None;
     // Raw (pre-retransmission) loss over few packets is noisy; smooth it.
     let mut loss_avg = secondscrn_diagnostics::Ewma::new(0.2);
+    // Latency feedback: frames received since the last report.
+    let clock = Instant::now();
+    let mut timings: Vec<FrameTiming> = Vec::new();
+    let mut feedback_tick = tokio::time::interval(FEEDBACK_INTERVAL);
+    let mut last_keyframe_request: Option<Instant> = None;
 
     let result = loop {
         tokio::select! {
@@ -904,6 +968,13 @@ async fn run_connection(
                         lock(&inner.state).stream = Some(stream.clone());
                         inner.publish();
                     }
+                    HostMessage::Recovery { rtp_time } => worker.recovery(rtp_time),
+                    HostMessage::NetworkLimited { limited } => {
+                        warnings.network_limited(Instant::now(), limited);
+                        metrics.warning = warnings.current(Instant::now());
+                        lock(&inner.state).metrics.warning = metrics.warning;
+                        inner.publish();
+                    }
                     HostMessage::UiScale { current, options } => {
                         lock(&inner.state).ui_scale = Some(UiScale { current, options });
                         inner.publish();
@@ -919,6 +990,11 @@ async fn run_connection(
                 match ev {
                     TransportEvent::Frame(f) => {
                         frames_received += 1;
+                        timings.push(FrameTiming {
+                            rtp_time: f.rtp_time,
+                            arrival_us: f.arrival.saturating_duration_since(clock).as_micros() as u64,
+                            bytes: f.data.len().min(u32::MAX as usize) as u32,
+                        });
                         // Diagnostics: frames must arrive once, in order.
                         if let Some(prev) = last_rtp && f.rtp_time <= prev {
                             odd_frames += 1;
@@ -1019,20 +1095,41 @@ async fn run_connection(
                     behind_seen = behind;
                 }
                 metrics.warning = warnings.current(now);
-                if worker.take_keyframe_request() {
-                    media.request_keyframe();
-                    ch.send(&ClientMessage::RequestKeyframe).await?;
-                }
                 nonce += 1;
                 ping_sent = Some((nonce, Instant::now()));
                 ch.send(&ClientMessage::Ping { nonce }).await?;
+            }
+            _ = feedback_tick.tick(), if !timings.is_empty() || worker.wants_keyframe() => {
+                // The decoder lost its references: tell the PC right away (it
+                // answers with a recovery frame or a keyframe), and again only
+                // if that doesn't arrive.
+                if last_keyframe_request.is_none_or(|t: Instant| t.elapsed() >= KEYFRAME_REQUEST_REPEAT)
+                    && worker.take_keyframe_request()
+                {
+                    last_keyframe_request = Some(Instant::now());
+                    media.request_keyframe();
+                    ch.send(&ClientMessage::RequestKeyframe).await?;
+                }
+                if !timings.is_empty() {
+                    let frames = std::mem::take(&mut timings);
+                    ch.send(&ClientMessage::FrameTimings { frames, intact: worker.intact() }).await?;
+                }
+            }
+            _ = stats_tick.tick() => {
                 let ds = worker.stats();
                 let now = Instant::now();
-                let dt = now.duration_since(last_render.1).as_secs_f32();
-                if dt > 0.0 {
-                    metrics.render_fps = ds.frames_rendered.saturating_sub(last_render.0) as f32 / dt;
+                renders.push_back((ds.frames_rendered, now));
+                // Rate over the oldest sample within the window: current
+                // within a fraction of a second, not a ping interval.
+                while renders.len() > 2 && now.duration_since(renders[1].1) >= RENDER_RATE_WINDOW {
+                    renders.pop_front();
                 }
-                last_render = (ds.frames_rendered, now);
+                if let Some(&(frames, t)) = renders.front() {
+                    let dt = now.duration_since(t).as_secs_f32();
+                    if dt > 0.0 {
+                        metrics.render_fps = ds.frames_rendered.saturating_sub(frames) as f32 / dt;
+                    }
+                }
                 metrics.decode_ms_avg = ds.decode_ms_avg;
                 metrics.frames_received = frames_received;
                 metrics.frames_decoded = ds.frames_decoded;
@@ -1060,6 +1157,9 @@ async fn run_connection(
 
 enum WorkerMsg {
     Frame(ReceivedFrame),
+    /// The frame with this RTP time decodes after a loss (it predicts only
+    /// from a reference picture this decoder has).
+    Recovery(u64),
     Reconfigure(StreamConfig),
 }
 
@@ -1073,7 +1173,14 @@ struct DecodeWorker {
     behind: Arc<AtomicU64>,
     need_keyframe: Arc<AtomicBool>,
     stats: Arc<Mutex<DecoderStats>>,
+    /// First and latest RTP time decoded since the last loss.
+    intact: Arc<Mutex<Option<(u64, u64)>>>,
 }
+
+/// Frames kept while waiting for a recovery frame (it may arrive before the
+/// PC's announcement does), at most this many and this old.
+const HELD_FRAMES: usize = 64;
+const HELD_MAX_AGE: Duration = Duration::from_millis(500);
 
 impl DecodeWorker {
     fn spawn(
@@ -1084,7 +1191,8 @@ impl DecodeWorker {
         let (tx, rx) = std::sync::mpsc::sync_channel::<WorkerMsg>(DECODE_QUEUE);
         let need_keyframe = Arc::new(AtomicBool::new(true));
         let stats = Arc::new(Mutex::new(DecoderStats::default()));
-        let (nk, st) = (need_keyframe.clone(), stats.clone());
+        let intact = Arc::new(Mutex::new(None));
+        let (nk, st, run) = (need_keyframe.clone(), stats.clone(), intact.clone());
         let queued = Arc::new(AtomicUsize::new(0));
         let q = queued.clone();
         let behind_count = Arc::new(AtomicU64::new(0));
@@ -1101,8 +1209,65 @@ impl DecodeWorker {
                     }
                 };
                 let mut waiting_for_key = true;
+                // While waiting: frames after the loss, and the announced
+                // recovery frame.
+                let mut held: VecDeque<ReceivedFrame> = VecDeque::new();
+                let mut recovery: Option<u64> = None;
+                // Decodes `f`; false if the decoder must stop.
+                let decode = |f: &ReceivedFrame,
+                              waiting_for_key: &mut bool,
+                              decoder: &mut Box<dyn crate::platform::VideoDecoder>| {
+                    let starts_run = *waiting_for_key;
+                    match decoder.decode(f) {
+                        Ok(DecodeOutcome::Ok) => {
+                            if starts_run {
+                                // Requests made while waiting are answered.
+                                nk.store(false, Ordering::Relaxed);
+                            }
+                            *waiting_for_key = false;
+                            let mut r = lock(&run);
+                            *r = Some((
+                                if starts_run { f.rtp_time } else { r.map_or(f.rtp_time, |(a, _)| a) },
+                                f.rtp_time,
+                            ));
+                        }
+                        Ok(DecodeOutcome::NeedKeyframe) => {
+                            *waiting_for_key = true;
+                            *lock(&run) = None;
+                            nk.store(true, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            let _ = errors.send(e);
+                            return false;
+                        }
+                    }
+                    *lock(&st) = decoder.stats();
+                    true
+                };
                 while let Ok(msg) = rx.recv() {
                     match msg {
+                        WorkerMsg::Recovery(rtp) => {
+                            if !waiting_for_key {
+                                continue;
+                            }
+                            held.retain(|f| f.rtp_time >= rtp);
+                            tracing::debug!(
+                                rtp,
+                                held = held.len(),
+                                arrived = held.front().is_some_and(|f| f.rtp_time == rtp),
+                                "recovery announced"
+                            );
+                            if held.front().is_some_and(|f| f.rtp_time == rtp) {
+                                // It arrived first: decode it and what followed.
+                                for f in std::mem::take(&mut held) {
+                                    if !decode(&f, &mut waiting_for_key, &mut decoder) {
+                                        return;
+                                    }
+                                }
+                            } else {
+                                recovery = Some(rtp);
+                            }
+                        }
                         WorkerMsg::Reconfigure(c) => {
                             config = c;
                             drop(decoder);
@@ -1114,6 +1279,9 @@ impl DecodeWorker {
                                 }
                             };
                             waiting_for_key = true;
+                            *lock(&run) = None;
+                            held.clear();
+                            recovery = None;
                             nk.store(true, Ordering::Relaxed);
                         }
                         WorkerMsg::Frame(f) => {
@@ -1130,31 +1298,38 @@ impl DecodeWorker {
                                     );
                                 }
                                 waiting_for_key = true;
+                                *lock(&run) = None;
                                 nk.store(true, Ordering::Relaxed);
                                 continue;
                             }
                             // After a gap, decoding would reference missing
                             // frames and smear text; hold the last good
-                            // picture until the requested keyframe arrives.
+                            // picture until a keyframe or a recovery frame.
                             if !f.contiguous && !f.keyframe {
                                 waiting_for_key = true;
+                                *lock(&run) = None;
                             }
-                            if waiting_for_key && !f.keyframe {
-                                nk.store(true, Ordering::Relaxed);
-                                continue;
-                            }
-                            match decoder.decode(&f) {
-                                Ok(DecodeOutcome::Ok) => waiting_for_key = false,
-                                Ok(DecodeOutcome::NeedKeyframe) => {
-                                    waiting_for_key = true;
+                            if f.keyframe {
+                                held.clear();
+                                recovery = None;
+                            } else if waiting_for_key {
+                                if recovery == Some(f.rtp_time) {
+                                    tracing::debug!(rtp = f.rtp_time, "recovery frame arrived");
+                                    recovery = None;
+                                    held.clear();
+                                } else {
                                     nk.store(true, Ordering::Relaxed);
-                                }
-                                Err(e) => {
-                                    let _ = errors.send(e);
-                                    return;
+                                    held.retain(|h| h.arrival.elapsed() < HELD_MAX_AGE);
+                                    if held.len() >= HELD_FRAMES {
+                                        held.pop_front();
+                                    }
+                                    held.push_back(f);
+                                    continue;
                                 }
                             }
-                            *lock(&st) = decoder.stats();
+                            if !decode(&f, &mut waiting_for_key, &mut decoder) {
+                                return;
+                            }
                         }
                     }
                 }
@@ -1167,7 +1342,19 @@ impl DecodeWorker {
             behind: behind_count,
             need_keyframe,
             stats,
+            intact,
         }
+    }
+
+    fn recovery(&self, rtp: u64) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(WorkerMsg::Recovery(rtp));
+        }
+    }
+
+    /// First and latest RTP time decoded since the last loss.
+    fn intact(&self) -> Option<(u64, u64)> {
+        *lock(&self.intact)
     }
 
     /// Returns false if the frame was dropped because the decoder is behind.
@@ -1202,6 +1389,10 @@ impl DecodeWorker {
 
     fn take_queue_max(&self) -> u32 {
         self.queued_max.swap(self.queued.load(Ordering::Relaxed), Ordering::Relaxed) as u32
+    }
+
+    fn wants_keyframe(&self) -> bool {
+        self.need_keyframe.load(Ordering::Relaxed)
     }
 
     fn take_keyframe_request(&self) -> bool {

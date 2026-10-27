@@ -14,6 +14,9 @@ use crate::SessionError;
 /// [`PING_INTERVAL`], so this tolerates a couple of lost/late pings.
 pub const PEER_TIMEOUT: Duration = Duration::from_secs(8);
 pub const PING_INTERVAL: Duration = Duration::from_secs(2);
+/// How often both sides refresh their statistics (frame rates in the UI
+/// follow changes within this, independent of the pings).
+pub const STATS_INTERVAL: Duration = Duration::from_millis(250);
 /// Timeout for steps of the handshake that need no human interaction.
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 

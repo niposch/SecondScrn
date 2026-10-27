@@ -72,6 +72,27 @@ published as an installable APK. Release builds are minified (R8);
 `proguard-rules.pro` keeps JNA, the UniFFI bindings and the JNI bridge.
 `versionName` comes from the workspace version in `Cargo.toml`.
 
+## Versions before 1.0: lockstep
+
+Until 1.0 the PC and tablet apps only work together at the identical
+version (`protocol::versions_compatible`); from 1.0 the protocol version
+decides. Every release therefore ships both apps, and users update both.
+
+* The PC app never installs updates silently: it notifies, and Settings
+  installs on request. Its prompts say the tablet app must be updated to the
+  same version.
+* On a mismatch the older side is pointed at exactly the other side's
+  version, not the newest release: the tablet offers the APK of the PC's
+  version (`SecondScrn-<v>-android.apk` from that release), the PC offers to
+  install the tablet's version (Velopack feed of that release) or links the
+  matching tablet app. Downgrading the tablet would need an uninstall, which
+  loses its pairings.
+* Release assets must keep these names (`v<version>` tag,
+  `SecondScrn-<version>-android.apk`, `releases.win.json`): the apps build the
+  URLs from them.
+* Tablets on 0.0.1 predate this and only show "the host and tablet app
+  versions are incompatible"; say "update both apps" in the release notes.
+
 ## Checklist
 
 1. Bump `version` in `Cargo.toml` (also used by the Android build), the Windows

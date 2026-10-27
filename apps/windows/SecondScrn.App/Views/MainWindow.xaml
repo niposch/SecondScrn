@@ -24,20 +24,10 @@
             OpenPaneLength="220"
             SelectionChanged="OnNavigationChanged">
             <NavigationView.MenuItems>
-                <NavigationViewItem Content="Overview" Tag="overview" Icon="Home" />
-                <NavigationViewItem Content="Devices" Tag="devices">
+                <NavigationViewItem Content="Home" Tag="overview" Icon="Home" />
+                <NavigationViewItem Content="Tablets" Tag="devices">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE70A;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem Content="Display" Tag="display">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE7F4;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem Content="Streaming" Tag="streaming">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE93E;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem Content="Diagnostics" Tag="diagnostics">

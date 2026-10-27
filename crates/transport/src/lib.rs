@@ -32,9 +32,14 @@ pub use sdp_util::candidate_ports;
 
 /// Bitrate of the BWE before the first estimate arrives.
 pub const DEFAULT_START_BITRATE_BPS: u64 = 8_000_000;
-/// Receive-side reordering window (packets) and how long a hole may block it.
+/// Receive-side reordering window (packets) and how long a hole may block it:
+/// a few retransmission round trips on a LAN. A frame still missing then is
+/// recovered (reference picture or keyframe) rather than waited for, which
+/// would freeze the picture.
 const REORDER_PACKETS: usize = 2048;
-const REORDER_TIMEOUT: Duration = Duration::from_millis(250);
+const REORDER_TIMEOUT: Duration = Duration::from_millis(100);
+/// Packets kept for retransmission (also bounded by age, see above).
+const RTX_CACHE_PACKETS: usize = 4000;
 /// Minimum interval between keyframe requests from the receiver.
 const KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_millis(300);
 /// How long ICE may stay disconnected before the peer is declared lost.
@@ -267,26 +272,153 @@ impl Impairer {
     }
 }
 
+/// The sender's view of the link: frames sent but not yet reported as
+/// arrived by the receiver. When the oldest of them waits longer than
+/// reports usually take, frames are queued on the network, and a new frame
+/// would wait about as long. While that exceeds a frame interval the encoder
+/// skips captures instead of adding frames that could only arrive late.
+#[derive(Debug)]
+struct Pacing {
+    /// Capture time of the first frame: RTP time 0.
+    base: Option<Instant>,
+    /// Frames on their way: RTP time, when sent.
+    in_flight: std::collections::VecDeque<(u64, Instant)>,
+    /// Shortest time from sending a frame to its arrival report, per second
+    /// (the path and report delay when nothing is queued).
+    report_delays: std::collections::VecDeque<(Instant, Duration)>,
+    /// When the receiver last reported arrivals. Without recent reports
+    /// (none yet, or an outage) nothing is held back: frames must flow for
+    /// reports to resume.
+    last_report: Option<Instant>,
+    /// The latest frame, and since when frames flow (more than idle
+    /// keep-alives): the first frames after a still screen meet a radio
+    /// waking from power saving and are reported late without any queue.
+    last_sent: Option<Instant>,
+    active_since: Option<Instant>,
+}
+
+/// Waiting this much longer than reports usually take is not held against
+/// the link: the report interval (50 ms), a large frame's own transmission
+/// and the small queue the bitrate control allows. Beyond it the network is
+/// clearly behind (the link just shrank); the bitrate control adapts within
+/// that time, this is the safety net.
+const REPORT_INTERVAL_SLACK: Duration = Duration::from_millis(100);
+/// No report for this long: the receiver gets nothing (outage), so in-flight
+/// frames say nothing about a queue.
+const REPORTS_STOPPED: Duration = Duration::from_millis(150);
+/// Frames further apart than this are idle keep-alives (one per 200 ms on a
+/// still screen); after such a pause the first `WAKE_GRACE` of frames are
+/// never held back.
+const IDLE_GAP: Duration = Duration::from_millis(100);
+const WAKE_GRACE: Duration = Duration::from_millis(300);
+/// The usual report delay is the minimum over this long.
+const REPORT_DELAY_WINDOW: Duration = Duration::from_secs(10);
+/// A frame not reported after this long was lost (or the reports were):
+/// it no longer counts, so a lost report never stalls the stream.
+const IN_FLIGHT_LIMIT: Duration = Duration::from_secs(1);
+
+impl Pacing {
+    /// RTP time (90 kHz) of a frame captured at `t`.
+    fn rtp_time(&mut self, t: Instant) -> u64 {
+        let base = *self.base.get_or_insert(t);
+        t.saturating_duration_since(base).as_micros() as u64 * 9 / 100
+    }
+}
+
 /// Cloneable, thread-safe handle the encoder uses to hand frames to the
 /// network task.
 #[derive(Clone)]
 pub struct FrameSender {
     frames: mpsc::Sender<EncodedFrame>,
     dropped: Arc<std::sync::atomic::AtomicU64>,
+    pacing: Arc<std::sync::Mutex<Pacing>>,
 }
 
 impl FrameSender {
+    fn new(frames: mpsc::Sender<EncodedFrame>) -> Self {
+        FrameSender {
+            frames,
+            dropped: Default::default(),
+            pacing: Arc::new(std::sync::Mutex::new(Pacing {
+                base: None,
+                in_flight: Default::default(),
+                report_delays: Default::default(),
+                last_report: None,
+                last_sent: None,
+                active_since: None,
+            })),
+        }
+    }
+
+    fn pacing(&self) -> std::sync::MutexGuard<'_, Pacing> {
+        self.pacing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Queues an encoded frame for sending. Never blocks: when the queue is
     /// full the frame is dropped and `false` returned, and the caller must
     /// force a keyframe so the receiver recovers.
     pub fn send_frame(&self, frame: EncodedFrame) -> bool {
+        let captured = frame.capture_time;
         match self.frames.try_send(frame) {
-            Ok(()) => true,
+            Ok(()) => {
+                let now = Instant::now();
+                let mut p = self.pacing();
+                let rtp = p.rtp_time(captured);
+                p.in_flight.push_back((rtp, now));
+                if p.last_sent.is_none_or(|t| now.duration_since(t) > IDLE_GAP) {
+                    p.active_since = Some(now);
+                }
+                p.last_sent = Some(now);
+                true
+            }
             Err(_) => {
                 self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 false
             }
         }
+    }
+
+    /// RTP time (90 kHz) of the frame captured at `captured`, as sent.
+    pub fn rtp_time(&self, captured: Instant) -> u64 {
+        self.pacing().rtp_time(captured)
+    }
+
+    /// The receiver has the frames up to RTP time `rtp` (or lost some of
+    /// them; either way they no longer occupy the link).
+    pub fn acknowledge(&self, rtp: u64) {
+        let now = Instant::now();
+        let mut p = self.pacing();
+        p.last_report = Some(now);
+        let mut freshest = None;
+        while p.in_flight.front().is_some_and(|(t, _)| *t <= rtp) {
+            let (_, sent) = p.in_flight.pop_front().expect("checked");
+            freshest = Some(now.duration_since(sent));
+        }
+        if let Some(d) = freshest {
+            match p.report_delays.back_mut() {
+                Some((t, m)) if now.duration_since(*t) < Duration::from_secs(1) => *m = (*m).min(d),
+                _ => p.report_delays.push_back((now, d)),
+            }
+            while p.report_delays.front().is_some_and(|(t, _)| now.duration_since(*t) > REPORT_DELAY_WINDOW) {
+                p.report_delays.pop_front();
+            }
+        }
+    }
+
+    /// How long a frame handed over now would wait before the link is free.
+    pub fn backlog(&self) -> Duration {
+        let mut p = self.pacing();
+        let now = Instant::now();
+        if p.last_report.is_none_or(|t| now.duration_since(t) > REPORTS_STOPPED)
+            || p.active_since.is_none_or(|t| now.duration_since(t) < WAKE_GRACE)
+        {
+            return Duration::ZERO;
+        }
+        while p.in_flight.front().is_some_and(|(_, sent)| now.duration_since(*sent) > IN_FLIGHT_LIMIT) {
+            p.in_flight.pop_front();
+        }
+        let usual = p.report_delays.iter().map(|(_, d)| *d).min().unwrap_or_default() + REPORT_INTERVAL_SLACK;
+        p.in_flight.front().map_or(Duration::ZERO, |(_, sent)| now.duration_since(*sent).saturating_sub(usual))
     }
 
     pub fn frames_dropped(&self) -> u64 {
@@ -462,6 +594,13 @@ impl PendingSender {
     pub fn accept_answer(mut self, answer_sdp: &str) -> Result<MediaHandle, TransportError> {
         let answer = SdpAnswer::from_sdp_string(answer_sdp).map_err(|e| TransportError::Sdp(e.to_string()))?;
         self.rtc.sdp_api().accept_answer(self.pending, answer)?;
+        // Retransmit only what can still arrive in time: the receiver stops
+        // waiting for a hole after REORDER_TIMEOUT. Older data (after an
+        // outage, say) would only queue up ahead of fresh frames; the
+        // receiver recovers from a reference picture instead.
+        if let Some(stream) = self.rtc.direct_api().stream_tx_by_mid(self.mid, None) {
+            stream.set_rtx_cache(RTX_CACHE_PACKETS, REORDER_TIMEOUT, Some(0.15));
+        }
         let codec = self.codec;
         Ok(spawn_driver(self.rtc, self.sockets, self.mid, Role::Sender { codec, pt: None }))
     }
@@ -516,6 +655,7 @@ struct Datagram {
 fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> MediaHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     let (frame_tx, frame_rx) = mpsc::channel(FRAME_QUEUE);
+    let frames = FrameSender::new(frame_tx);
     let (evt_tx, evt_rx) = mpsc::channel(64);
     let sockets: Vec<Arc<UdpSocket>> = sockets.into_iter().map(Arc::new).collect();
     let (net_tx, net_rx) = mpsc::channel::<Datagram>(512);
@@ -562,7 +702,7 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
         connected: false,
         estimate: None,
         stats: TransportStats::default(),
-        first_frame_time: None,
+        pacing: frames.pacing.clone(),
         impairer: None,
         last_seq: None,
         prefix: None,
@@ -580,11 +720,7 @@ fn spawn_driver(rtc: Rtc, sockets: Vec<UdpSocket>, mid: Mid, role: Role) -> Medi
         reason
     });
 
-    MediaHandle {
-        commands: cmd_tx,
-        frames: FrameSender { frames: frame_tx, dropped: Default::default() },
-        events: evt_rx,
-    }
+    MediaHandle { commands: cmd_tx, frames, events: evt_rx }
 }
 
 struct Driver {
@@ -598,7 +734,8 @@ struct Driver {
     connected: bool,
     estimate: Option<u64>,
     stats: TransportStats,
-    first_frame_time: Option<Instant>,
+    /// Shared with the [`FrameSender`]: the RTP time base.
+    pacing: Arc<std::sync::Mutex<Pacing>>,
     impairer: Option<Impairer>,
     /// Highest RTP sequence number of an emitted frame (receiver).
     last_seq: Option<u64>,
@@ -755,9 +892,8 @@ impl Driver {
                 found
             }
         };
-        let base = *self.first_frame_time.get_or_insert(frame.capture_time);
-        let micros = frame.capture_time.saturating_duration_since(base).as_micros() as u64;
-        let rtp_time = MediaTime::new(micros * 9 / 100, Frequency::NINETY_KHZ);
+        let rtp = self.pacing.lock().unwrap_or_else(|e| e.into_inner()).rtp_time(frame.capture_time);
+        let rtp_time = MediaTime::new(rtp, Frequency::NINETY_KHZ);
         writer.write(pt, frame.capture_time, rtp_time, frame.data)?;
         Ok(())
     }

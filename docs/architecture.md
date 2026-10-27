@@ -98,17 +98,24 @@ VDD monitor ─(DWM)─► WGC frame (BGRA texture)
   detection and the control channel usually report the same loss).
 * UDP sockets use 8 MB buffers: a keyframe at tablet resolution leaves as one
   burst of several hundred kilobytes, and the Windows default (64 KB) dropped
-  its tail locally.
+  its tail locally. The bitrate control keeps them from filling (see
+  Adaptation).
 * Encoders are probed by configuring them (up to 3840×2160); encoders are bound
   to their GPU by PCI vendor ID. IddCx "shadow" adapters are ignored.
-* With an integrated and a dedicated GPU, the user picks which one encodes
-  (default: integrated, for battery life); the other is used if the chosen one
-  cannot encode. On hybrid laptops the dedicated GPU's MFT only activates in a
-  process Windows runs on that GPU, which it decides at start from the per-app
-  graphics preference: choosing it sets the preference
-  (`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`) and restarts the app.
-  The integrated GPU's encoder was about three times slower in such a process.
-* The encoder benchmark (Streaming page, `secondscrn-host-cli bench`) runs in
+* GPUs count as integrated by D3D11's `UnifiedMemoryArchitecture`; dedicated
+  memory size misleads (AMD APUs report 2 GB and more).
+* A GPU's MFT only activates in a process Windows runs on that GPU, which it
+  decides at start from the per-app graphics preference
+  (`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`): on hybrid laptops
+  the integrated GPU, on desktops the GPU driving the screens; the other GPU's
+  encoder then fails to start (E_UNEXPECTED, E_OUTOFMEMORY). By default
+  (Automatic) the encoder of the GPU Windows runs SecondScrn on (DXGI's first
+  adapter) is used, and Windows' graphics setting is the override. Choosing
+  integrated or dedicated (Settings → Advanced) sets the preference (power
+  saving / high performance) and asks for a restart when needed. The
+  integrated GPU's encoder was about three times slower in a process set to
+  the dedicated GPU.
+* The encoder benchmark (Diagnostics → Performance test, `secondscrn-host-cli bench`) runs in
   the helper executable shipped next to the app, once per GPU kind with the
   matching graphics preference, on synthetic full-screen scrolling content.
 * The stream never promises more frames than the monitor refreshes: if
@@ -138,32 +145,71 @@ keyframe requested. Frames never pass through Kotlin.
 
 ## Adaptation
 
-Media is sent **without str0m's GCC estimator/pacer**; an RTCP-feedback
-controller in `session::adapt` sets the encoder target instead:
+Priorities: low latency, no freezes, and adapting to whatever the network
+allows in service of both. Media is sent **without str0m's GCC
+estimator/pacer**; `session::adapt` sets the encoder target from the
+tablet's own measurements instead:
 
+* **Latency feedback.** Every 50 ms the tablet reports when each frame
+  completed (`FrameTimings`: RTP time, arrival on its clock, size). The PC's
+  `DelayMeter` turns that into queueing delay (one-way delay above its 30 s
+  minimum, clock offset cancels out; the smallest over the last 100 ms, so one
+  large frame isn't a queue) and into delivery and send rates over 500 ms
+  (pauses between arrivals don't count as link time).
+* **Control to a latency target.** A growing queue (delay > 30 ms and frames
+  arriving slower than they were sent) cuts the budget within ~100 ms to what
+  the link delivered, lower the longer the queue (it drains). A draining
+  queue (after a cut, or retransmissions catching up after an outage) is not
+  cut further. A raised but stable delay is probed with small cuts; if it
+  stays, it is the path's (another access point, a dozing radio) and becomes
+  the base. While the link is busy and unqueued the budget grows ~30 %/s.
+  Loss alone is Wi-Fi noise (repaired by retransmission or recovery frames)
+  and only cuts above 10 %. Without arrival reports (old tablet app) the
+  previous RTT/loss AIMD applies.
+* **No late frames.** The PC counts frames sent but not yet reported as
+  arrived. When the oldest has waited 100 ms longer than reports usually
+  take, the network is behind and the encoder skips captures (the next one
+  shows the newest picture) instead of queueing frames that could only arrive
+  late; keyframes and recovery frames are never held back. While reports stop
+  (an outage) nothing is held back.
 * Ceiling/floor derive from pixel rate × bits-per-pixel per preset and codec;
-  the session starts at half the ceiling (≤ 25 Mbit/s).
-* Once per second: loss (receiver reports) > 2 % or queueing delay (median of
-  the last 3 RTTs above the 10 s minimum) > 40 ms cuts the budget by 10 %;
-  > 5 % / > 100 ms cuts it by 30 %. Two clean seconds later it grows 15 %/s.
-* Delay is ignored while the link is application-limited (< 25 % of the
-  budget in use): radios doze between sparse idle packets and RTT jumps
-  without any queueing. Loss always counts.
-* When even the floor doesn't fit, fps drops (to ≥ 15) before per-frame
-  quality. Resolution is never changed automatically; the user picks it
-  (tablet, PC app or Windows settings) and the session follows: the monitor
-  mode changes, the encoder restarts at the new size and the WebRTC session
-  and tablet surface are kept.
+  the session starts at half the ceiling (≤ 25 Mbit/s). When even the floor
+  doesn't fit, fps drops (to ≥ 15) before per-frame quality, and after 5 s
+  both apps say that the network can't carry the chosen resolution and frame
+  rate (`NetworkLimited`). Resolution and frame rate are never changed
+  automatically; the user picks them (tablet, PC app or Windows settings) and
+  the session follows: the monitor mode changes, the encoder restarts at the
+  new size and the WebRTC session and tablet surface are kept.
+
+Measured with `crates/session/tests/latency.rs` (loopback, simulated
+bottleneck): a link dropping from 8 to 3 Mbit/s behind a 1 s buffer settled
+at ~35 ms p95 latency (previously ~950 ms with a 6 s freeze) and recovered
+full quality within 10 s of clearing (previously 2.2 of 6.5 Mbit/s).
 
 Why not GCC: str0m paces at 1.1 × the GCC estimate. A desktop is idle most of
 the time, so the estimate follows the idle send rate (~1 Mbit/s) and every
 large frame after a pause then sat in the pacer for seconds. Measured on a
 real tablet: 4–6 fps and ~1 Mbit/s before, 56–57 fps after removing the pacer.
 
+**Loss recovery without keyframes** (`session::recovery`). A keyframe at
+tablet resolution is large: it freezes the picture while it crosses the
+network and on a struggling link causes the next loss. Encoders with
+verified long-term reference support (`secondscrn-host-cli ltr-check`:
+NVIDIA's H.264 and AV1; NVIDIA's HEVC accepts the settings but keeps
+predicting from the previous frame) mark a reference picture every 500 ms;
+the tablet reports which frames it decoded intact, confirming them. After a
+loss the next frame predicts only from the newest confirmed reference: one
+small frame, announced to the tablet (`Recovery`), which holds the frames
+after the loss until it arrives. A recovery that doesn't take is retried
+once, then a keyframe follows. Other encoders and codecs use keyframes.
+
 Receive side: a 2048-packet reordering window (keyframes at tablet resolution
-span hundreds of packets) and a 250 ms hole timeout. RTP sequence gaps mark
-frames non-contiguous; the receiver requests a keyframe and the decoder holds
-the last good picture until it arrives. The Windows host requests 1 ms timer
+span hundreds of packets) and a 100 ms hole timeout; the sender keeps packets
+for retransmission only that long (older ones could only arrive after the
+receiver gave up, and after an outage would queue ahead of fresh frames).
+RTP sequence gaps mark frames non-contiguous; the receiver asks for recovery
+at once and the decoder holds the last good picture until a recovery frame or
+keyframe arrives. The Windows host requests 1 ms timer
 resolution (the default 15.6 ms capped frame pacing near 32 fps); the tablet
 holds a low-latency Wi-Fi lock while streaming.
 
@@ -187,7 +233,7 @@ holds a low-latency Wi-Fi lock while streaming.
 | Android decoding | MediaCodec | MediaCodec via the **NDK from Rust** (`ndk` crate) | As preferred; GStreamer on Android was evaluated and rejected (deployment size/complexity, no benefit with str0m). |
 | Windows bindings | C ABI + generated P/Invoke | **UniFFI + uniffi-bindgen-cs** | One binding technology for both platforms; generated records, enums, errors and callbacks. |
 | Android bindings | UniFFI | UniFFI (+1 JNI function) | As preferred. |
-| Congestion control | WebRTC's (GCC/TWCC) | **RTCP-feedback AIMD**, NACK/RTX and PLI from str0m | str0m's GCC-coupled pacer adds seconds of latency for bursty desktop content (measured); loss and RTT still come from standard RTCP. |
+| Congestion control | WebRTC's (GCC/TWCC) | **Own latency-target control** from per-frame arrival reports on the control channel; NACK/RTX (age-limited) and PLI from str0m | str0m's GCC-coupled pacer adds seconds of latency for bursty desktop content (measured), and its TWCC feedback is only available through it. Frame-level reports measure exactly what matters (how late each picture is) and are testable end to end. |
 | Virtual monitor removal | — | CCD path attach/detach | VDD keeps ≥1 monitor even with count 0; detaching the path from the desktop works without elevation. |
 | WebRTC library | upstream crate | **str0m 0.24.1 vendored with one fix** (`vendor/str0m/SECONDSCRN-PATCH.md`) | Its HEVC depacketizer split multi-slice pictures into several frames. |
 

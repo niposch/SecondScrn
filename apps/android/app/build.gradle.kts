@@ -42,6 +42,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // With the release key available, debug builds install over the
+            // release app (keeping its pairings) instead of needing an uninstall.
+            signingConfigs.findByName("release")?.let { signingConfig = it }
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

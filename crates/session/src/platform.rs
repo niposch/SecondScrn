@@ -10,7 +10,7 @@
 //! All methods may block and are called from dedicated threads, never from
 //! the async runtime's worker threads.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use secondscrn_protocol::{CodecCapability, DeviceInfo, DisplayRequest, InputEvent, StreamConfig};
 use secondscrn_transport::{EncodedFrame, ReceivedFrame};
@@ -123,8 +123,29 @@ pub trait PipelineSink: Send + Sync {
     /// Returns false if the frame was dropped (queue full); the pipeline must
     /// then make its next frame a keyframe.
     fn on_frame(&self, frame: EncodedFrame) -> bool;
+    /// How long a frame produced now would wait before the network can take
+    /// it. The pipeline skips captures while this exceeds a frame interval:
+    /// a skipped capture costs one frame of smoothness, a frame dropped after
+    /// encoding breaks the decoder's references until the next keyframe.
+    fn backlog(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+    /// The frame captured at `captured`, just handed to `on_frame`, uses the
+    /// long-term references (see [`crate::recovery`]).
+    fn on_reference(&self, _captured: Instant, _reference: FrameReference) {}
     /// The pipeline stopped because of an unrecoverable error.
     fn on_error(&self, error: PlatformError);
+}
+
+/// How an encoded frame uses the encoder's long-term references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameReference {
+    /// A keyframe: the decoder's references are gone.
+    Keyframe,
+    /// The frame is kept as reference `slot` (as a keyframe: the only one).
+    Marked { slot: u32, keyframe: bool },
+    /// The frame predicts only from reference `slot`.
+    Recovery { slot: u32 },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -147,6 +168,18 @@ pub trait VideoPipeline: Send {
     fn request_keyframe(&self);
     fn set_target(&self, bitrate_bps: u64, max_fps: u32);
     fn stats(&self) -> PipelineStats;
+    /// The encoder recovers from loss with long-term references (verified
+    /// for this encoder and codec); then the pipeline reports keyframes and
+    /// reference use through [`PipelineSink::on_reference`].
+    fn supports_references(&self) -> bool {
+        false
+    }
+    /// Keep the next frame as reference `slot`.
+    fn mark_reference(&self, _slot: u32) {}
+    /// Encode the next frame (right away) from reference `slot` only.
+    fn recover_from(&self, _slot: u32) {
+        self.request_keyframe();
+    }
 }
 
 pub trait HostPlatform: Send + Sync + 'static {

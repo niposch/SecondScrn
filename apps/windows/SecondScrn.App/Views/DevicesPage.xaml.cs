@@ -8,6 +8,7 @@ public sealed partial class DevicesPage : Page
 {
     public MainViewModel ViewModel => App.Current.ViewModel;
     public Visibility NoDevicesVisibility => ViewModel.Devices.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility HasDevicesVisibility => ViewModel.Devices.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
 
     public DevicesPage()
     {

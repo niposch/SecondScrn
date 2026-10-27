@@ -165,7 +165,7 @@ fn run_one(desc: &EncoderDescriptor, width: u32, height: u32, fps: u32, seconds:
         }
         converter.convert(&srv, &targets[slot]);
         let ts = (start.elapsed().as_nanos() / 100) as i64;
-        enc.encode(&targets[slot].texture, ts, state.frame_no == 0)?;
+        enc.encode(&targets[slot].texture, ts, state.frame_no == 0, encoder::Reference::None)?;
         state.need_input -= 1;
         state.submitted.push((ts, Instant::now()));
         state.frame_no += 1;
@@ -224,6 +224,82 @@ fn run_one(desc: &EncoderDescriptor, width: u32, height: u32, fps: u32, seconds:
         max_fps,
         error: None,
     })
+}
+
+/// Frames of [`reference_check`]: frame `REF_MARK` is kept as long-term
+/// reference 1 (the keyframe is reference 0), frames `REF_LOST` are "lost",
+/// and the frame after them recovers from reference 1.
+pub const REF_FRAMES: u32 = 100;
+pub const REF_MARK: u32 = 10;
+pub const REF_LOST: std::ops::Range<u32> = 11..20;
+
+/// Encodes scrolling content with long-term references as the stream does
+/// on loss (`secondscrn-host-cli ltr-check`). Returns the complete stream,
+/// the stream without the lost frames, and whether the encoder accepted the
+/// reference configuration. Decoding both must give identical pictures from
+/// the recovery frame on.
+pub fn reference_check(desc: &EncoderDescriptor, width: u32, height: u32) -> Result<(Vec<u8>, Vec<u8>, bool)> {
+    use encoder::Reference;
+    let gpu = d3d::create(desc.luid)?;
+    let pattern = secondscrn_graphics::pattern::desktop(width as usize, 2 * height as usize);
+    let source = convert::upload_bgra(&gpu, width, 2 * height, &pattern.bgra)?;
+    let frame = texture(&gpu, width, height)?;
+    let color = ColorInfo::SDR_BT709_LIMITED;
+    let converter = Converter::new(&gpu, &RgbToYuv::for_color(&color))?;
+    let srv = converter.source_view(&frame)?;
+    let target = converter.create_target(width, height)?;
+    let (tx, rx) = mpsc::channel();
+    let mut enc = Encoder::new(
+        &gpu,
+        desc,
+        EncoderSettings { codec: desc.codec, width, height, fps: 60, bitrate_bps: 20_000_000, color },
+        move |e| tx.send(e).is_ok(),
+    )?;
+    let (mut full, mut lossy) = (Vec::new(), Vec::new());
+    let (mut need_input, mut outputs) = (0u32, 0u32);
+    let mut next_event = |need_input: &mut u32, outputs: &mut u32, enc: &mut Encoder| -> Result<()> {
+        match rx.recv_timeout(Duration::from_secs(3)) {
+            Ok(EncoderEvent::NeedInput) => *need_input += 1,
+            Ok(EncoderEvent::HaveOutput) => {
+                if let Some(out) = enc.collect()? {
+                    let index = *outputs;
+                    *outputs += 1;
+                    full.extend_from_slice(&out.data);
+                    if !REF_LOST.contains(&index) {
+                        lossy.extend_from_slice(&out.data);
+                    }
+                }
+            }
+            Ok(EncoderEvent::Error(e)) => bail!("encoder error: {e}"),
+            Err(_) => bail!("the encoder stopped responding"),
+        }
+        Ok(())
+    };
+    for i in 0..REF_FRAMES {
+        while need_input == 0 {
+            next_event(&mut need_input, &mut outputs, &mut enc)?;
+        }
+        let offset = (i * SCROLL) % height;
+        unsafe {
+            let b = D3D11_BOX { left: 0, top: offset, front: 0, right: width, bottom: offset + height, back: 1 };
+            gpu.context.CopySubresourceRegion(&frame, 0, 0, 0, 0, &source, 0, Some(&b));
+        }
+        converter.convert(&srv, &target);
+        let reference = match i {
+            0 => Reference::Mark(0),
+            REF_MARK => Reference::Mark(1),
+            i if i == REF_LOST.end => Reference::Recover(1),
+            _ => Reference::None,
+        };
+        enc.encode(&target.texture, i as i64 * 166_667, i == 0, reference)?;
+        need_input -= 1;
+        while outputs <= i {
+            next_event(&mut need_input, &mut outputs, &mut enc)?;
+        }
+    }
+    let ltr = enc.supports_ltr();
+    drop(enc);
+    Ok((full, lossy, ltr))
 }
 
 struct Run {

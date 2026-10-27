@@ -41,7 +41,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let prefer = secondscrn_session::settings::load::<secondscrn_session::settings::HostSettings>(
         &data_dir.join("settings.json"),
     )
-    .encoder_gpu;
+    .encoder_gpu_choice;
     let platform = Arc::new(WindowsHostPlatform::new(source, prefer));
     let engine = HostEngine::start(
         HostConfig {
@@ -81,7 +81,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 } else if let Some(sess) = &s.session {
                     let m = &sess.metrics;
                     line = format!(
-                        "{:?} {} {} {}x{} | cap {:.0} enc {:.0} fps {:.1} ms | {:.1} Mbit/s (est {:.1}) rtt {} loss {} | tx {} client {:.0} fps dec {:.0} ms q {} rx {} dec {} stut {} | kf {} nack {} pli {} drop {}+{} late {} cdrop {}",
+                        "{:?} {} {} {}x{} | cap {:.0} enc {:.0} fps {:.1} ms | {:.1} Mbit/s (est {:.1}) rtt {} queue {} loss {} | tx {} client {:.0} fps dec {:.0} ms q {} rx {} dec {} stut {} | kf {} nack {} pli {} drop {}+{} late {} cdrop {}",
                         sess.phase,
                         sess.device_name,
                         sess.stream.as_ref().map(|c| c.codec.to_string()).unwrap_or_default(),
@@ -93,6 +93,7 @@ pub fn run(args: &[String]) -> Result<()> {
                         m.send_rate_bps as f64 / 1e6,
                         m.bitrate_estimate_bps.unwrap_or(0) as f64 / 1e6,
                         m.rtt_ms.map(|r| format!("{r:.0}ms")).unwrap_or("-".into()),
+                        m.queue_delay_ms.map(|q| format!("{q:.0}ms")).unwrap_or("-".into()),
                         m.loss.map(|l| format!("{:.1}%", l * 100.0)).unwrap_or("-".into()),
                         m.pipeline.frames_encoded,
                         m.client.map(|c| c.render_fps).unwrap_or(0.0),

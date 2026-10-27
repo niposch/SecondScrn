@@ -28,15 +28,62 @@ pub struct AdapterInfo {
     pub dedicated_video_memory: usize,
     pub vendor_id: u32,
     pub device_id: u32,
+    /// The GPU shares system memory (D3D11 `UnifiedMemoryArchitecture`).
+    pub unified_memory: Option<bool>,
 }
 
 impl AdapterInfo {
-    /// Integrated GPUs share system memory and report only a small carve-out
-    /// (Intel: 128 MB) as dedicated; graphics cards report their VRAM.
+    /// Integrated GPUs share system memory. Their dedicated memory is only a
+    /// carve-out, but that is not reliably small (AMD APUs: 2 GB and more
+    /// depending on the BIOS), so it is only the fallback when the driver
+    /// doesn't answer.
     pub fn kind(&self) -> secondscrn_session::settings::EncoderGpu {
         use secondscrn_session::settings::EncoderGpu;
-        if self.dedicated_video_memory <= 512 << 20 { EncoderGpu::Integrated } else { EncoderGpu::Dedicated }
+        let integrated = self.unified_memory.unwrap_or(self.dedicated_video_memory <= 512 << 20);
+        if integrated { EncoderGpu::Integrated } else { EncoderGpu::Dedicated }
     }
+}
+
+/// Asks the driver whether the adapter has a unified memory architecture.
+/// Cached per adapter: answering takes a device.
+fn unified_memory(adapter: &IDXGIAdapter1, luid: LUID) -> Option<bool> {
+    static CACHE: std::sync::Mutex<Vec<(u64, Option<bool>)>> = std::sync::Mutex::new(Vec::new());
+    let key = luid_to_u64(luid);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, uma)) = cache.iter().find(|(k, _)| *k == key) {
+        return *uma;
+    }
+    let uma = (|| {
+        let mut device = None;
+        unsafe {
+            D3D11CreateDevice(
+                adapter,
+                D3D_DRIVER_TYPE_UNKNOWN,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_FLAG(0),
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+            .ok()?;
+        }
+        let device: ID3D11Device = device?;
+        let mut options = D3D11_FEATURE_DATA_D3D11_OPTIONS2::default();
+        unsafe {
+            device
+                .CheckFeatureSupport(
+                    D3D11_FEATURE_D3D11_OPTIONS2,
+                    &mut options as *mut _ as *mut _,
+                    std::mem::size_of_val(&options) as u32,
+                )
+                .ok()?;
+        }
+        Some(options.UnifiedMemoryArchitecture.as_bool())
+    })();
+    cache.push((key, uma));
+    uma
 }
 
 pub fn luid_to_u64(l: LUID) -> u64 {
@@ -58,6 +105,7 @@ pub fn adapters() -> Result<Vec<(IDXGIAdapter1, AdapterInfo)>> {
         if !software && out.iter().any(|(_, a)| a.vendor_id == desc.VendorId && a.device_id == desc.DeviceId) {
             continue;
         }
+        let unified_memory = if software { None } else { unified_memory(&adapter, desc.AdapterLuid) };
         out.push((
             adapter,
             AdapterInfo {
@@ -67,10 +115,17 @@ pub fn adapters() -> Result<Vec<(IDXGIAdapter1, AdapterInfo)>> {
                 dedicated_video_memory: desc.DedicatedVideoMemory,
                 vendor_id: desc.VendorId,
                 device_id: desc.DeviceId,
+                unified_memory,
             },
         ));
     }
     Ok(out)
+}
+
+/// The GPU Windows runs this process on: DXGI lists it first (on hybrid
+/// laptops according to the per-app graphics preference).
+pub fn default_adapter() -> Option<LUID> {
+    adapters().ok()?.into_iter().find(|(_, a)| !a.software).map(|(_, a)| a.luid)
 }
 
 /// Creates a device on the adapter with `luid`, or on the first hardware

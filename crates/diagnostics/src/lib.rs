@@ -2,8 +2,8 @@
 //!
 //! * [`LogBuffer`]: an in-memory ring of recent log lines, fed by a tracing
 //!   layer, for the UI's log view and for diagnostic export.
-//! * [`RateCounter`] / [`Ewma`]: cheap, lock-free-friendly measurement helpers
-//!   for hot paths (no allocation, no logging per frame).
+//! * [`RateCounter`] / [`Ewma`]: cheap measurement helpers
+//!   for hot paths (no logging per frame; no allocation once warmed up).
 //! * [`redact`]: strips secrets and stable identifiers from exported text.
 
 use std::collections::VecDeque;
@@ -79,12 +79,16 @@ impl<S: tracing::Subscriber> Layer<S> for LogBufferLayer {
     }
 }
 
-/// Counts events and reports a rate over a sliding one-second window.
+/// Window of [`RateCounter`].
+const RATE_WINDOW: Duration = Duration::from_millis(500);
+
+/// Counts events and reports their rate over the last half second, up to the
+/// moment it is read (a change shows within a fraction of a second).
 #[derive(Debug)]
 pub struct RateCounter {
-    window_start: Instant,
-    count: u64,
-    last_rate: f32,
+    created: Instant,
+    /// Ticks within the window (the buffer stops growing at the peak rate).
+    ticks: VecDeque<Instant>,
     total: u64,
 }
 
@@ -96,28 +100,38 @@ impl Default for RateCounter {
 
 impl RateCounter {
     pub fn new(now: Instant) -> Self {
-        RateCounter { window_start: now, count: 0, last_rate: 0.0, total: 0 }
+        RateCounter { created: now, ticks: VecDeque::new(), total: 0 }
     }
 
     pub fn tick(&mut self, now: Instant) {
-        self.count += 1;
+        self.ticks.push_back(now);
         self.total += 1;
-        self.roll(now);
+        self.expire(now);
     }
 
-    fn roll(&mut self, now: Instant) {
-        let elapsed = now.saturating_duration_since(self.window_start);
-        if elapsed >= Duration::from_secs(1) {
-            self.last_rate = self.count as f32 / elapsed.as_secs_f32();
-            self.count = 0;
-            self.window_start = now;
+    fn expire(&mut self, now: Instant) {
+        while self.ticks.front().is_some_and(|t| now.saturating_duration_since(*t) > RATE_WINDOW) {
+            self.ticks.pop_front();
         }
     }
 
-    /// Rate over the last completed window. Decays to 0 when ticks stop.
+    /// Events per second over the last half second. While events keep coming this
+    /// is the average interval between them (steady at a steady rate, unlike a
+    /// count, which flickers by one); once they stop it decays to 0.
     pub fn rate(&mut self, now: Instant) -> f32 {
-        self.roll(now);
-        if now.saturating_duration_since(self.window_start) > Duration::from_secs(2) { 0.0 } else { self.last_rate }
+        self.expire(now);
+        let (Some(first), Some(last)) = (self.ticks.front(), self.ticks.back()) else { return 0.0 };
+        let n = self.ticks.len();
+        let span = last.saturating_duration_since(*first).as_secs_f32();
+        let window = now.saturating_duration_since(self.created).min(RATE_WINDOW).as_secs_f32();
+        let counted = if window > 0.0 { n as f32 / window } else { 0.0 };
+        if n < 2 || span <= 0.0 {
+            return counted;
+        }
+        let interval = span / (n - 1) as f32;
+        // Stalled: no event for several intervals.
+        let quiet = now.saturating_duration_since(*last).as_secs_f32();
+        if quiet > (4.0 * interval).max(0.1) { counted.min(1.0 / quiet) } else { 1.0 / interval }
     }
 
     pub fn total(&self) -> u64 {
@@ -213,6 +227,32 @@ mod tests {
         assert!((r.rate(t1) - 60.0).abs() < 2.0, "{}", r.rate(t1));
         assert_eq!(r.rate(t1 + Duration::from_secs(5)), 0.0);
         assert_eq!(r.total(), 61);
+    }
+
+    #[test]
+    fn rate_counter_follows_a_change_within_the_window() {
+        let t0 = Instant::now();
+        let mut r = RateCounter::new(t0);
+        let mut t = t0;
+        for _ in 0..120 {
+            t += Duration::from_micros(1_000_000 / 60);
+            r.tick(t);
+        }
+        assert!((r.rate(t) - 60.0).abs() < 0.5, "{}", r.rate(t));
+        // The rate drops to 30 fps: shown after a few frames, not a window.
+        for _ in 0..8 {
+            t += Duration::from_micros(1_000_000 / 30);
+            r.tick(t);
+        }
+        let after = r.rate(t);
+        assert!(after < 50.0, "{after}");
+        for _ in 0..30 {
+            t += Duration::from_micros(1_000_000 / 30);
+            r.tick(t);
+        }
+        assert!((r.rate(t) - 30.0).abs() < 0.5, "{}", r.rate(t));
+        // Frames stop: the rate falls right away.
+        assert!(r.rate(t + Duration::from_millis(300)) < 4.0);
     }
 
     #[test]

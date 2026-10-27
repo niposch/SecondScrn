@@ -3,7 +3,7 @@
 //! The UIs never poll internal state; they receive a fresh snapshot whenever
 //! something changes (and about once per second while streaming).
 
-use secondscrn_protocol::{ClientStats, CodecCapability, ResolutionOption, StreamConfig};
+use secondscrn_protocol::{ClientStats, CodecCapability, QualityPreset, ResolutionOption, StreamConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::platform::{DisplayInfo, DriverStatus, PipelineStats, UiScale};
@@ -49,6 +49,9 @@ impl LinkHealth {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HostMetrics {
     pub pipeline: PipelineStats,
+    /// How long frames currently wait in network queues (arrival reports).
+    #[serde(default)]
+    pub queue_delay_ms: Option<f32>,
     pub bitrate_estimate_bps: Option<u64>,
     pub bytes_sent: u64,
     pub send_rate_bps: u64,
@@ -75,6 +78,14 @@ pub struct SessionInfo {
     pub resolutions: Vec<ResolutionOption>,
     /// Frame rates offered for this tablet.
     pub frame_rates: Vec<u32>,
+    /// The tablet's preset (its own choice, or the default).
+    pub preset: QualityPreset,
+    /// Resolution or frame rate were changed from the preset's.
+    pub custom: bool,
+    /// The network can't carry the chosen resolution and frame rate: fewer
+    /// frames are sent. Lowering either helps.
+    #[serde(default)]
+    pub network_limited: bool,
     pub metrics: HostMetrics,
     pub connected_since: u64,
 }
@@ -112,7 +123,20 @@ pub struct HostSnapshot {
     pub driver: DriverStatus,
     pub encoders: Vec<CodecCapability>,
     pub last_error: Option<String>,
+    /// A tablet with another app version tried to connect (cleared when a
+    /// tablet connects successfully).
+    #[serde(default)]
+    pub version_mismatch: Option<VersionMismatch>,
     pub settings: HostSettings,
+}
+
+/// The PC and a tablet run different app versions; the older one must be
+/// updated to exactly the other's version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionMismatch {
+    pub device_name: String,
+    pub tablet_version: String,
+    pub host_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +159,10 @@ pub enum ClientPhase {
     Failed {
         message: String,
         needs_pairing: bool,
+        /// The PC runs another app version and this app must be updated to
+        /// it (before 1.0 the versions must match): that version.
+        #[serde(default)]
+        update_to: Option<String>,
     },
 }
 
@@ -179,6 +207,9 @@ pub enum PerformanceWarning {
     Decoder,
     /// Packets are lost or delayed: the network can't carry the stream.
     Network,
+    /// The network carries less than this resolution and frame rate need:
+    /// the PC sends fewer frames.
+    Bandwidth,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

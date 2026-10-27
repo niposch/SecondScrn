@@ -28,13 +28,13 @@ pub enum DisplaySource {
 pub struct WindowsHostPlatform {
     encoders: Mutex<encoder::Inventory>,
     /// The GPU whose encoders are preferred (user setting).
-    prefer: Mutex<EncoderGpu>,
+    prefer: Mutex<Option<EncoderGpu>>,
     displays: VirtualDisplayManager,
     source: DisplaySource,
     input: Mutex<input::Injector>,
 }
 
-fn probe(prefer: EncoderGpu) -> encoder::Inventory {
+fn probe(prefer: Option<EncoderGpu>) -> encoder::Inventory {
     let inv = encoder::probe(prefer);
     if inv.selected.is_empty() {
         tracing::error!("no working hardware video encoder found");
@@ -43,7 +43,7 @@ fn probe(prefer: EncoderGpu) -> encoder::Inventory {
 }
 
 impl WindowsHostPlatform {
-    pub fn new(source: DisplaySource, prefer: EncoderGpu) -> Self {
+    pub fn new(source: DisplaySource, prefer: Option<EncoderGpu>) -> Self {
         let encoders = probe(prefer);
         if matches!(source, DisplaySource::Virtual) {
             // A previous run that crashed may have left the virtual monitor
@@ -71,8 +71,9 @@ impl WindowsHostPlatform {
         *self.encoders.lock().unwrap_or_else(|e| e.into_inner()) = probe(prefer);
     }
 
-    /// Prefers `gpu`'s encoders from the next stream on (re-probes).
-    pub fn set_encoder_gpu(&self, gpu: EncoderGpu) {
+    /// Prefers `gpu`'s encoders (`None`: automatic) from the next stream on
+    /// (re-probes).
+    pub fn set_encoder_gpu(&self, gpu: Option<EncoderGpu>) {
         *self.prefer.lock().unwrap_or_else(|e| e.into_inner()) = gpu;
         self.reprobe();
     }

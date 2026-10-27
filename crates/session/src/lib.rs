@@ -14,6 +14,7 @@ pub mod client;
 pub mod host;
 pub mod negotiate;
 pub mod platform;
+pub mod recovery;
 pub mod settings;
 pub mod snapshot;
 #[cfg(feature = "test-support")]
@@ -52,6 +53,9 @@ pub enum SessionError {
     InvalidInput(&'static str),
     #[error("{0} not found")]
     NotFound(&'static str),
+    /// Before 1.0 the PC and tablet apps must run the same version.
+    #[error("the PC runs SecondScrn {host}, the tablet {tablet}")]
+    VersionMismatch { host: String, tablet: String },
 }
 
 impl From<secondscrn_transport::TransportError> for SessionError {

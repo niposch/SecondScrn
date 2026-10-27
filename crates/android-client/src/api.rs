@@ -53,12 +53,24 @@ pub trait ClientListener: Send + Sync {
 pub enum Phase {
     Idle,
     Connecting,
-    Pairing { pin: String },
+    Pairing {
+        pin: String,
+    },
     Negotiating,
     Streaming,
     Interrupted,
-    Reconnecting { attempt: u32, retry_in_ms: u64 },
-    Failed { message: String, needs_pairing: bool },
+    Reconnecting {
+        attempt: u32,
+        retry_in_ms: u64,
+    },
+    /// `update_version`/`update_url`: the PC runs another app version and
+    /// this app must be updated to exactly it (download of that APK).
+    Failed {
+        message: String,
+        needs_pairing: bool,
+        update_version: Option<String>,
+        update_url: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
@@ -248,9 +260,12 @@ pub fn to_ffi(s: &ClientSnapshot) -> ClientState {
         ClientPhase::Reconnecting { attempt, retry_in_ms } => {
             Phase::Reconnecting { attempt: *attempt, retry_in_ms: *retry_in_ms }
         }
-        ClientPhase::Failed { message, needs_pairing } => {
-            Phase::Failed { message: message.clone(), needs_pairing: *needs_pairing }
-        }
+        ClientPhase::Failed { message, needs_pairing, update_to } => Phase::Failed {
+            message: message.clone(),
+            needs_pairing: *needs_pairing,
+            update_version: update_to.clone(),
+            update_url: update_to.as_deref().map(secondscrn_protocol::android_apk_url),
+        },
     };
     // Known hosts first (most recent first), then discovered unknown ones.
     let mut hosts: Vec<HostItem> = {
@@ -368,6 +383,9 @@ fn warning_text(
         W::Network => "The network can't keep up (packet loss or delay). Choose a lower resolution or frame rate, \
              or the Weak Wi-Fi quality."
             .to_string(),
+        W::Bandwidth => format!(
+            "The network can't carry {what} right now, so fewer frames are sent. Choose a lower resolution or frame rate."
+        ),
     }
 }
 

@@ -7,9 +7,15 @@
 //! queued in the pacer for seconds. Instead, frames leave immediately and
 //! this module reacts to the RTCP feedback WebRTC already provides:
 //!
-//! * **Loss** (receiver reports) and **queueing delay** (RTT above the recent
-//!   minimum) cut a bandwidth budget multiplicatively; a clean link grows it
-//!   by 15 % per second up to the preset's ceiling (AIMD).
+//! * **Queueing delay**, measured per frame from the tablet's arrival reports
+//!   ([`DelayMeter`], ~20 per second), is the main signal: once frames wait
+//!   on the network, the budget drops to what the link actually delivered,
+//!   below it while a queue drains, so the picture stays recent. While the
+//!   link carries the stream without queueing, the budget grows (~30 % per
+//!   second) up to the preset's ceiling.
+//! * **Loss** (receiver reports, about once per second) cuts the budget as
+//!   well; RTT (also once per second) only counts when no arrival reports
+//!   come in.
 //! * Resolution never changes: the Windows desktop layout must stay put.
 //! * When even the floor bitrate doesn't fit, the frame rate drops (to ≥ 15)
 //!   before per-frame quality, so text stays sharp.
@@ -19,7 +25,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use secondscrn_protocol::{Codec, QualityPreset};
+use secondscrn_protocol::{Codec, FrameTiming, QualityPreset};
 
 const ABSOLUTE_MIN_BPS: u64 = 1_000_000;
 const ABSOLUTE_MAX_BPS: u64 = 150_000_000;
@@ -45,6 +51,160 @@ const MIN_RTT_WINDOW: Duration = Duration::from_secs(10);
 const DELAY_SIGNAL_MIN_LOAD: f64 = 0.25;
 /// Encoder reconfigurations below this relative change are skipped.
 const MIN_CHANGE_RATIO: f64 = 0.05;
+/// Queueing delay (from arrival reports) above which the link is overused,
+/// for at least `OVERUSE_FOR`, and below which it has room to grow.
+const OVERUSE_DELAY: Duration = Duration::from_millis(30);
+const OVERUSE_FOR: Duration = Duration::from_millis(50);
+const UNDERUSE_DELAY: Duration = Duration::from_millis(10);
+/// Raised delay that doesn't grow is probed once per this interval; above
+/// the limit it is cut like a growing queue.
+const STANDING_PROBE: Duration = Duration::from_secs(1);
+const STANDING_LIMIT: Duration = Duration::from_millis(150);
+/// Minimum time between delay-based cuts, unless the queue keeps growing.
+const CUT_SPACING: Duration = Duration::from_millis(200);
+/// After a delay-based cut, growth resumes this soon once the queue is gone
+/// (the delay signal is precise; no need for the RTT path's caution).
+const DELAY_GROWTH_HOLD: Duration = Duration::from_secs(1);
+/// Share of the budget the stream must send for delay to mean congestion,
+/// and how long it must have done so (the radio wakes up meanwhile).
+const BUSY_SHARE: f64 = 0.4;
+const WAKE_GRACE: Duration = Duration::from_millis(300);
+/// Budget growth per second while the link is little used and nothing
+/// indicates congestion.
+const IDLE_GROWTH_PER_S: f64 = 0.15;
+/// Budget growth per second of busy, unqueued link.
+const DELAY_GROWTH_PER_S: f64 = 0.3;
+/// Loss that cuts the budget even when delay shows no congestion, at most
+/// this often.
+const HEAVY_LOSS: f64 = 0.10;
+const LOSS_CUT_SPACING: Duration = Duration::from_secs(2);
+/// Without arrival reports for this long the RTT-based fallback applies.
+const DELAY_FEEDBACK_STALE: Duration = Duration::from_secs(2);
+
+/// Queueing delay and delivery rate on the media path, from the tablet's
+/// per-frame arrival reports. The one-way delay of a frame (arrival on the
+/// tablet's clock minus capture on the PC's) includes an unknown clock
+/// offset; its minimum over [`BASE_WINDOW_S`] seconds is the delay of an
+/// empty network, so the excess is time spent queued.
+#[derive(Debug, Default)]
+pub struct DelayMeter {
+    /// Minimum one-way delay (µs, with the clock offset) per arrival second.
+    mins: VecDeque<(u64, i64)>,
+    /// Recent frames: arrival (µs), one-way delay (µs), bytes, capture (µs).
+    recent: VecDeque<(u64, i64, u32, i64)>,
+    /// A path delay accepted as the base (see [`Self::rebase`]) until the
+    /// arrival time given.
+    floor: Option<(i64, u64)>,
+    /// After a pause in arrivals (an outage), frames captured before this
+    /// time (µs) arrive late because they were retransmitted, not queued:
+    /// they don't count as queueing delay.
+    resumed_capture_us: i64,
+}
+
+/// Seconds over which the base (empty-network) delay is the minimum. Long
+/// enough that a queue standing for many seconds still counts as one; clock
+/// drift between the devices adds at most a millisecond or two.
+const BASE_WINDOW_S: u64 = 30;
+/// The queueing delay is the smallest of the frames arriving this recently
+/// (a single large frame's own transmission time is not a queue).
+const DELAY_WINDOW_US: u64 = 100_000;
+/// Delivery rate is measured over this much of the recent arrivals.
+const RATE_WINDOW_US: u64 = 500_000;
+/// A pause in arrivals this long is an outage (frames are sent at least
+/// every 200 ms, as keep-alives on a static screen).
+const OUTAGE_GAP_US: u64 = 120_000;
+/// Longest pause between two arrivals that counts as link time (a frame
+/// interval at 30 fps, with margin).
+const ARRIVAL_GAP_CAP_US: u64 = 40_000;
+
+impl DelayMeter {
+    pub fn add(&mut self, t: &FrameTiming) {
+        let capture_us = (t.rtp_time as i64).saturating_mul(100) / 9; // 90 kHz -> µs
+        let delay = t.arrival_us as i64 - capture_us;
+        if let (Some(&(prev, ..)), Some(base)) = (self.recent.back(), self.base())
+            && t.arrival_us.saturating_sub(prev) > OUTAGE_GAP_US
+        {
+            // Frames sent from now on show the queue again.
+            self.resumed_capture_us = t.arrival_us as i64 - base;
+        }
+        let second = t.arrival_us / 1_000_000;
+        match self.mins.back_mut() {
+            Some((s, m)) if *s == second => *m = (*m).min(delay),
+            _ => self.mins.push_back((second, delay)),
+        }
+        while self.mins.front().is_some_and(|(s, _)| s + BASE_WINDOW_S < second) {
+            self.mins.pop_front();
+        }
+        self.recent.push_back((t.arrival_us, delay, t.bytes, capture_us));
+        while self.recent.front().is_some_and(|(a, ..)| a + RATE_WINDOW_US < t.arrival_us) {
+            self.recent.pop_front();
+        }
+        if self.floor.is_some_and(|(_, until)| t.arrival_us > until) {
+            self.floor = None;
+        }
+    }
+
+    fn base(&self) -> Option<i64> {
+        let min = self.mins.iter().map(|(_, m)| *m).min()?;
+        Some(self.floor.map_or(min, |(f, _)| f.max(min)))
+    }
+
+    /// How long the latest frames waited in network queues.
+    pub fn queue_delay(&self) -> Option<Duration> {
+        let base = self.base()?;
+        let last = self.recent.back()?.0;
+        let queued = self
+            .recent
+            .iter()
+            .filter(|(a, _, _, c)| a + DELAY_WINDOW_US >= last && *c >= self.resumed_capture_us)
+            .map(|(_, d, ..)| d - base)
+            .min()?;
+        Some(Duration::from_micros(queued.max(0) as u64))
+    }
+
+    /// The current delay is the path's, not a queue (it stayed although the
+    /// stream sent less): measure queues against it from now on, for as long
+    /// as the base window.
+    pub fn rebase(&mut self) {
+        let Some(&(last, ..)) = self.recent.back() else { return };
+        let current = self.recent.iter().filter(|(a, ..)| a + DELAY_WINDOW_US >= last).map(|(_, d, ..)| *d).min();
+        if let Some(d) = current {
+            self.floor = Some((d, last + BASE_WINDOW_S * 1_000_000));
+        }
+    }
+
+    /// Bits per second sent, for the recently arrived frames (by their
+    /// capture times). Arrivals slower than this mean a queue is growing.
+    pub fn send_bps(&self) -> Option<u64> {
+        let (first, last) = (self.recent.front()?.3, self.recent.back()?.3);
+        let span = last.saturating_sub(first);
+        if span < 100_000 {
+            return None;
+        }
+        let bytes: u64 = self.recent.iter().skip(1).map(|(_, _, b, _)| *b as u64).sum();
+        Some(bytes * 8 * 1_000_000 / span as u64)
+    }
+
+    /// Bits per second that arrived recently. While a queue stands, this is
+    /// what the link can carry. Pauses between arrivals (an idle desktop, an
+    /// outage) count only up to [`ARRIVAL_GAP_CAP_US`]: the link was not
+    /// carrying anything then, which says nothing about its capacity.
+    pub fn delivery_bps(&self) -> Option<u64> {
+        let mut arrivals = self.recent.iter().map(|(a, ..)| *a);
+        let mut prev = arrivals.next()?;
+        let mut busy = 0;
+        for a in arrivals {
+            busy += a.saturating_sub(prev).min(ARRIVAL_GAP_CAP_US);
+            prev = a;
+        }
+        if busy < 50_000 {
+            return None;
+        }
+        // The first frame's bytes arrived before the window began.
+        let bytes: u64 = self.recent.iter().skip(1).map(|(_, _, b, _)| *b as u64).sum();
+        Some(bytes * 8 * 1_000_000 / busy)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitratePolicy {
@@ -119,6 +279,19 @@ pub struct BitrateController {
     last_cut: Option<Instant>,
     last_growth: Option<Instant>,
     last_congestion: Congestion,
+    /// Delay-based control: since when the delay is above the threshold,
+    /// the latest arrival report, the queue delay at the last cut.
+    overuse_since: Option<Instant>,
+    last_delay_report: Option<Instant>,
+    cut_delay: Duration,
+    /// Raised delay that doesn't grow: since when, and probes (small cuts)
+    /// made to tell a standing queue (drains) from a longer path (doesn't).
+    standing_since: Option<Instant>,
+    standing_probes: u32,
+    rebase: bool,
+    last_loss_cut: Option<Instant>,
+    /// Since when the stream uses the link (delay counts after a moment).
+    busy_since: Option<Instant>,
 }
 
 impl BitrateController {
@@ -131,7 +304,136 @@ impl BitrateController {
             last_cut: None,
             last_growth: None,
             last_congestion: Congestion::None,
+            overuse_since: None,
+            last_delay_report: None,
+            cut_delay: Duration::ZERO,
+            standing_since: None,
+            standing_probes: 0,
+            rebase: false,
+            last_loss_cut: None,
+            busy_since: None,
         }
+    }
+
+    /// The raised delay is the path's: the meter should take it as base.
+    pub fn take_rebase(&mut self) -> bool {
+        std::mem::take(&mut self.rebase)
+    }
+
+    fn delay_feedback(&self, now: Instant) -> bool {
+        self.last_delay_report.is_some_and(|t| now.duration_since(t) < DELAY_FEEDBACK_STALE)
+    }
+
+    /// Feeds the queueing delay and the delivery and send rates of the
+    /// recently arrived frames, from arrival reports (about 20 per second
+    /// while frames flow). Returns a new encoder target when it should be
+    /// applied.
+    pub fn on_delay(
+        &mut self,
+        queued: Duration,
+        delivery_bps: Option<u64>,
+        send_bps: Option<u64>,
+        now: Instant,
+    ) -> Option<EncoderTarget> {
+        self.last_delay_report = Some(now);
+        let p = self.policy;
+        // Delay only means congestion while the stream uses the link: frames
+        // on an idle desktop (keep-alives, a moving cursor) meet a dozing
+        // radio and arrive late without any queue, and so do the first large
+        // frames when motion starts. Cutting then starved the stream (fewer
+        // frames at full resolution). So: no delay judgement while the link
+        // is little used, and only after it has been busy for a moment;
+        // clearly bad delay always counts.
+        let busy = send_bps.is_some_and(|s| s as f64 >= self.budget * BUSY_SHARE);
+        if !busy {
+            self.busy_since = None;
+        } else if self.busy_since.is_none() {
+            self.busy_since = Some(now);
+        }
+        let settled = self.busy_since.is_some_and(|t| now.duration_since(t) >= WAKE_GRACE);
+        if !settled && queued <= HARD_DELAY {
+            self.overuse_since = None;
+            self.standing_since = None;
+            // Idle periods are not congestion: the budget recovers (slowly)
+            // so the next scroll starts at full quality.
+            if !busy {
+                self.grow(IDLE_GROWTH_PER_S, now);
+            }
+            let target = self.target_for(self.budget);
+            return self.apply(target, false);
+        }
+        // Frames arriving slower than they were sent: the queue grows.
+        // Faster: it drains (after a cut, or retransmitted frames catching
+        // up after an outage); cutting more would only starve the stream.
+        let (filling, draining) = match (delivery_bps, send_bps) {
+            (Some(d), Some(s)) => ((d as f64) < s as f64 * 0.9, (d as f64) > s as f64 * 1.1),
+            _ => (true, false),
+        };
+        if queued > OVERUSE_DELAY && draining {
+            self.overuse_since = None;
+            self.standing_since = None;
+        } else if queued > OVERUSE_DELAY && !filling && queued <= STANDING_LIMIT {
+            // Raised but stable delay: a standing queue, or a longer path
+            // (another access point, a power-saving radio). A small cut
+            // drains a queue; if the delay stays, it is the path's.
+            self.overuse_since = None;
+            let since = *self.standing_since.get_or_insert(now);
+            if now.duration_since(since) >= STANDING_PROBE {
+                self.standing_since = Some(now);
+                if self.standing_probes < 2 {
+                    self.standing_probes += 1;
+                    self.budget = (self.budget * SOFT_CUT).max(p.floor as f64 * 0.25);
+                    self.last_cut = Some(now);
+                } else {
+                    self.standing_probes = 0;
+                    self.rebase = true;
+                }
+            }
+        } else if queued > OVERUSE_DELAY {
+            self.standing_since = None;
+            let since = *self.overuse_since.get_or_insert(now);
+            let spaced = self.last_cut.is_none_or(|t| now.duration_since(t) >= CUT_SPACING);
+            // A queue still growing after a cut needs another one now.
+            let worse = queued > self.cut_delay * 2;
+            // A large queue is unambiguous: no need to confirm it.
+            let confirmed = now.duration_since(since) >= OVERUSE_FOR || queued > OVERUSE_DELAY * 2;
+            if confirmed && (spaced || worse) {
+                // What the link carried, and less while the queue drains:
+                // the longer it is, the faster.
+                // (Measured over at least `WAKE_GRACE` of busy link, so the
+                // delivery rate is the link's, not an idle desktop's.)
+                let capacity = delivery_bps.map_or(self.budget, |d| d as f64).min(self.budget);
+                let drain = 1.0 - queued.as_secs_f64().min(0.25) / 0.5;
+                self.budget = (capacity * 0.9 * drain).max(p.floor as f64 * 0.25);
+                self.last_cut = Some(now);
+                self.cut_delay = queued;
+                self.last_congestion = if queued > HARD_DELAY { Congestion::Severe } else { Congestion::Moderate };
+            }
+        } else {
+            self.overuse_since = None;
+            self.standing_since = None;
+            self.standing_probes = 0;
+            if queued < UNDERUSE_DELAY {
+                self.grow(DELAY_GROWTH_PER_S, now);
+            } else {
+                self.last_growth = Some(now);
+            }
+        }
+        let target = self.target_for(self.budget);
+        self.apply(target, false)
+    }
+
+    /// Grows the budget by `per_s` per second since the last call (not
+    /// within `DELAY_GROWTH_HOLD` of a cut).
+    fn grow(&mut self, per_s: f64, now: Instant) {
+        let held = self.last_cut.is_none_or(|t| now.duration_since(t) >= DELAY_GROWTH_HOLD);
+        let ceiling = self.policy.ceiling as f64;
+        if held && self.budget < ceiling {
+            let dt = self.last_growth.map_or(0.05, |t| now.duration_since(t).as_secs_f64().min(0.25));
+            self.budget = (self.budget * (1.0 + per_s * dt)).min(ceiling);
+            self.last_congestion = Congestion::None;
+        }
+        self.last_growth = Some(now);
     }
 
     pub fn current(&self) -> EncoderTarget {
@@ -210,9 +512,28 @@ impl BitrateController {
         send_rate_bps: u64,
         now: Instant,
     ) -> Option<EncoderTarget> {
+        let p = self.policy;
+        // With arrival reports, congestion shows as queueing delay (handled
+        // by `on_delay`, which also grows the budget). Loss alone is mostly
+        // Wi-Fi noise, repaired by retransmission or recovery frames:
+        // cutting for it starved the stream at 1-2 % random loss. Only heavy
+        // loss cuts, in proportion (as WebRTC's loss controller does).
+        if self.delay_feedback(now) {
+            let loss = loss.unwrap_or(0.0) as f64;
+            // At most every other report, and without holding back growth:
+            // outages (Wi-Fi scans, interference) also show as heavy loss,
+            // and starving the stream between them helps nothing.
+            let spaced = self.last_loss_cut.is_none_or(|t| now.duration_since(t) >= LOSS_CUT_SPACING);
+            if loss > HEAVY_LOSS && spaced {
+                self.budget = (self.budget * (1.0 - 0.5 * loss)).max(p.floor as f64 * 0.25);
+                self.last_loss_cut = Some(now);
+                self.last_congestion = Congestion::Severe;
+            }
+            let target = self.target_for(self.budget);
+            return self.apply(target, false);
+        }
         let congestion = self.classify(loss, rtt, send_rate_bps, now);
         self.last_congestion = congestion;
-        let p = self.policy;
         match congestion {
             Congestion::Severe | Congestion::Moderate => {
                 let cut = if congestion == Congestion::Severe { HARD_CUT } else { SOFT_CUT };
@@ -259,6 +580,42 @@ mod tests {
 
     fn controller() -> BitrateController {
         BitrateController::new(BitratePolicy::for_stream(Codec::H265, 2560, 1600, 60, QualityPreset::Automatic, None))
+    }
+
+    /// Feeds arrival reports every 50 ms for `ms`, from `t`.
+    fn reports(c: &mut BitrateController, t: &mut Instant, ms: u64, queued: u64, sent: u64, delivered: u64) {
+        for _ in 0..ms / 50 {
+            *t += MS(50);
+            c.on_delay(MS(queued), Some(delivered), Some(sent), *t);
+        }
+    }
+
+    #[test]
+    fn a_waking_radio_is_not_congestion() {
+        let mut c = controller();
+        let mut t = Instant::now();
+        let start = c.budget_bps();
+        // Still screen: keep-alives arrive late (dozing radio).
+        reports(&mut c, &mut t, 2000, 60, IDLE, IDLE);
+        assert!(c.budget_bps() > start, "idle must not cut; it recovers instead");
+        let before = c.budget_bps();
+        // Motion starts: the first large frames meet the waking radio.
+        let busy = before * 9 / 10;
+        reports(&mut c, &mut t, 250, 60, busy, busy * 7 / 10);
+        assert_eq!(c.budget_bps(), before, "no cut while the radio wakes up");
+        // It stays slow: real congestion, cut to about what the link carried.
+        reports(&mut c, &mut t, 300, 60, busy, busy * 7 / 10);
+        assert!(c.budget_bps() < before * 7 / 10 && c.budget_bps() >= before / 4, "{} of {before}", c.budget_bps());
+    }
+
+    #[test]
+    fn clearly_bad_delay_cuts_at_once() {
+        let mut c = controller();
+        let mut t = Instant::now();
+        let before = c.budget_bps();
+        let busy = before * 9 / 10;
+        reports(&mut c, &mut t, 100, 150, busy, busy / 3);
+        assert!(c.budget_bps() < before / 2, "{} of {before}", c.budget_bps());
     }
 
     #[test]

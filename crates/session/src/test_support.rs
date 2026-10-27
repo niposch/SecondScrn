@@ -25,8 +25,37 @@ fn caps() -> Vec<CodecCapability> {
         .collect()
 }
 
+/// Origin of the capture timestamps synthetic frames carry.
+fn epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
+}
+
+/// Marker before the capture time (16 hex digits, so the payload never
+/// contains a start code) in synthetic frames.
+const STAMP: &[u8] = b"TS";
+
+/// The capture time a synthetic frame carries.
+pub fn capture_time(frame: &[u8]) -> Option<Instant> {
+    let at = frame.windows(STAMP.len()).position(|w| w == STAMP)? + STAMP.len();
+    let hex = std::str::from_utf8(frame.get(at..at + 16)?).ok()?;
+    Some(epoch() + Duration::from_nanos(u64::from_str_radix(hex, 16).ok()?))
+}
+
 /// Builds an access unit that str0m's packetisers accept for `codec`.
 pub fn synthetic_frame(codec: Codec, index: u64, keyframe: bool) -> Vec<u8> {
+    synthetic_frame_sized(codec, index, keyframe, None, Instant::now())
+}
+
+/// Like [`synthetic_frame`], `size` bytes long (if given) and stamped with
+/// `captured`.
+pub fn synthetic_frame_sized(
+    codec: Codec,
+    index: u64,
+    keyframe: bool,
+    size: Option<usize>,
+    captured: Instant,
+) -> Vec<u8> {
     let mut f = Vec::new();
     match codec {
         Codec::H264 => {
@@ -52,6 +81,8 @@ pub fn synthetic_frame(codec: Codec, index: u64, keyframe: bool) -> Vec<u8> {
             f.push(100);
         }
     }
+    f.extend_from_slice(STAMP);
+    f.extend_from_slice(format!("{:016x}", captured.saturating_duration_since(epoch()).as_nanos() as u64).as_bytes());
     let n = if codec == Codec::Av1 {
         100
     } else if keyframe {
@@ -59,7 +90,13 @@ pub fn synthetic_frame(codec: Codec, index: u64, keyframe: bool) -> Vec<u8> {
     } else {
         600
     };
+    let n = size.map_or(n, |s| s.saturating_sub(f.len()).max(16));
     f.extend((0..n).map(|i| ((i as u64 + index) % 250 + 1) as u8));
+    if codec == Codec::Av1 {
+        // The padding OBU's size field (one LEB128 byte above): keep it valid.
+        f[3] = (f.len() - 4).min(127) as u8;
+        f.truncate(4 + f[3] as usize);
+    }
     f
 }
 
@@ -69,6 +106,8 @@ pub struct FakeHostState {
     pub displays_acquired: AtomicU32,
     pub displays_released: AtomicU32,
     pub keyframe_requests: AtomicU64,
+    /// Losses recovered from a reference picture instead of a keyframe.
+    pub recoveries: AtomicU64,
     pub frames_produced: AtomicU64,
     pub last_target: Mutex<Option<(u64, u32)>>,
     /// Every display plan applied, in order.
@@ -86,11 +125,17 @@ pub struct FakeHostState {
 pub struct FakeHostPlatform {
     pub state: Arc<FakeHostState>,
     pub fps: u32,
+    /// Frames as large as the bitrate target allows (keyframes 4x), like a
+    /// real encoder on full-screen motion; small fixed frames otherwise.
+    pub sized_by_bitrate: bool,
+    /// The "encoder" supports long-term references (loss recovery without
+    /// keyframes).
+    pub references: bool,
 }
 
 impl Default for FakeHostPlatform {
     fn default() -> Self {
-        FakeHostPlatform { state: Arc::default(), fps: 60 }
+        FakeHostPlatform { state: Arc::default(), fps: 60, sized_by_bitrate: false, references: false }
     }
 }
 
@@ -144,6 +189,9 @@ struct FakePipeline {
     stop: Arc<AtomicBool>,
     keyframe: Arc<AtomicBool>,
     state: Arc<FakeHostState>,
+    references: bool,
+    /// Reference use requested for the next frame.
+    next_reference: Arc<Mutex<Option<FrameReference>>>,
 }
 
 impl VideoPipeline for FakePipeline {
@@ -156,6 +204,16 @@ impl VideoPipeline for FakePipeline {
     }
     fn stats(&self) -> PipelineStats {
         PipelineStats { encode_fps: 60.0, capture_fps: 60.0, ..Default::default() }
+    }
+    fn supports_references(&self) -> bool {
+        self.references
+    }
+    fn mark_reference(&self, slot: u32) {
+        self.next_reference.lock().unwrap().get_or_insert(FrameReference::Marked { slot, keyframe: false });
+    }
+    fn recover_from(&self, slot: u32) {
+        self.state.recoveries.fetch_add(1, Ordering::SeqCst);
+        *self.next_reference.lock().unwrap() = Some(FrameReference::Recovery { slot });
     }
 }
 
@@ -197,22 +255,51 @@ impl HostPlatform for FakeHostPlatform {
         let stop = Arc::new(AtomicBool::new(false));
         let keyframe = Arc::new(AtomicBool::new(true));
         let (s, k, st) = (stop.clone(), keyframe.clone(), self.state.clone());
+        let (references, next_reference) = (self.references, Arc::new(Mutex::new(None)));
+        let next = next_reference.clone();
         let codec = cfg.codec;
         let interval = Duration::from_secs(1) / self.fps;
+        let (fps, sized, initial) = (self.fps, self.sized_by_bitrate, cfg.initial_bitrate_bps);
+        *self.state.last_target.lock().unwrap() = None;
         std::thread::spawn(move || {
             let mut i = 0u64;
             while !s.load(Ordering::SeqCst) {
+                // Like the real pipeline: no capture while the network is
+                // behind, except a keyframe or recovery frame (the tablet
+                // waits for it).
+                let urgent =
+                    k.load(Ordering::SeqCst) || matches!(*next.lock().unwrap(), Some(FrameReference::Recovery { .. }));
+                if !urgent && sink.backlog() > interval {
+                    std::thread::sleep(interval);
+                    continue;
+                }
                 let key = k.swap(false, Ordering::SeqCst);
-                let data = synthetic_frame(codec, i, key);
-                if !sink.on_frame(EncodedFrame { data: Arc::from(data), capture_time: Instant::now(), keyframe: key }) {
+                let size = sized.then(|| {
+                    let bps = st.last_target.lock().unwrap().map_or(initial, |(b, _)| b);
+                    let bytes = (bps / 8 / fps as u64) as usize;
+                    if key { bytes * 4 } else { bytes }
+                });
+                let captured = Instant::now();
+                let data = synthetic_frame_sized(codec, i, key, size, captured);
+                let reference = match next.lock().unwrap().take() {
+                    _ if key => Some(if references {
+                        FrameReference::Marked { slot: 0, keyframe: true }
+                    } else {
+                        FrameReference::Keyframe
+                    }),
+                    r => r.filter(|_| references),
+                };
+                if !sink.on_frame(EncodedFrame { data: Arc::from(data), capture_time: captured, keyframe: key }) {
                     k.store(true, Ordering::SeqCst);
+                } else if let Some(r) = reference {
+                    sink.on_reference(captured, r);
                 }
                 st.frames_produced.fetch_add(1, Ordering::SeqCst);
                 i += 1;
                 std::thread::sleep(interval);
             }
         });
-        Ok(Box::new(FakePipeline { stop, keyframe, state: self.state.clone() }))
+        Ok(Box::new(FakePipeline { stop, keyframe, state: self.state.clone(), references, next_reference }))
     }
     fn inject_input(&self, _d: &DisplayInfo, e: &InputEvent) -> Result<(), PlatformError> {
         self.state.inputs.lock().unwrap().push(e.clone());
@@ -225,22 +312,38 @@ pub struct FakeClientState {
     pub frames_decoded: AtomicU64,
     pub keyframes_decoded: AtomicU64,
     pub decoders_created: AtomicU32,
+    /// When each frame was decoded and how long after its capture.
+    pub latencies: Mutex<Vec<(Instant, Duration)>>,
 }
 
 #[derive(Default)]
 pub struct FakeClientPlatform {
     pub state: Arc<FakeClientState>,
     pub name: String,
+    /// The decoder stalls (every, for how long), like a busy tablet.
+    pub decode_stall: Option<(Duration, Duration)>,
 }
 
 struct FakeDecoder {
     state: Arc<FakeClientState>,
     stats: DecoderStats,
+    stall: Option<(Duration, Duration)>,
+    last_stall: Instant,
 }
 
 impl VideoDecoder for FakeDecoder {
     fn decode(&mut self, frame: &ReceivedFrame) -> Result<DecodeOutcome, PlatformError> {
+        if let Some((every, stall)) = self.stall
+            && self.last_stall.elapsed() >= every
+        {
+            std::thread::sleep(stall);
+            self.last_stall = Instant::now();
+        }
         self.state.frames_decoded.fetch_add(1, Ordering::SeqCst);
+        if let Some(t) = capture_time(&frame.data) {
+            let now = Instant::now();
+            self.state.latencies.lock().unwrap().push((now, now.saturating_duration_since(t)));
+        }
         if frame.keyframe {
             self.state.keyframes_decoded.fetch_add(1, Ordering::SeqCst);
         }
@@ -266,6 +369,11 @@ impl ClientPlatform for FakeClientPlatform {
     }
     fn create_decoder(&self, _c: &StreamConfig) -> Result<Box<dyn VideoDecoder>, PlatformError> {
         self.state.decoders_created.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(FakeDecoder { state: self.state.clone(), stats: DecoderStats::default() }))
+        Ok(Box::new(FakeDecoder {
+            state: self.state.clone(),
+            stats: DecoderStats::default(),
+            stall: self.decode_stall,
+            last_stall: Instant::now(),
+        }))
     }
 }

@@ -48,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -115,8 +116,13 @@ private fun ConnectionBanner(state: ClientState, repo: ClientRepository) {
             }
             Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
             val needsPairing = (state.phase as? Phase.Failed)?.needsPairing == true
+            val update = state.phase as? Phase.Failed
             val host = state.hosts.firstOrNull { it.name == state.hostName && it.paired }
-            if (needsPairing && host != null) {
+            val uri = LocalUriHandler.current
+            if (update?.updateUrl != null) {
+                // Exactly the PC's version (the browser downloads it, Android installs it).
+                Button(onClick = { uri.openUri(update.updateUrl!!) }) { Text("Download SecondScrn ${update.updateVersion}") }
+            } else if (needsPairing && host != null) {
                 Button(onClick = {
                     repo.forget(host.fingerprint)
                     repo.connect(host.address, host.port.toInt(), null)

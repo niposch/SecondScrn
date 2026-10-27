@@ -25,7 +25,7 @@ public sealed partial class SettingsPage : Page
 
     private void ShowAvailable(string version)
     {
-        UpdateStatus.Text = $"Version {version} is available.";
+        UpdateStatus.Text = $"Version {version} is available. Update the tablet app to {version} as well: both must run the same version.";
         InstallButton.Visibility = Visibility.Visible;
     }
 
@@ -66,6 +66,14 @@ public sealed partial class SettingsPage : Page
         var path = Path.Combine(AppContext.BaseDirectory, file);
         if (File.Exists(path)) Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
     }
+
+    private void OnReconnect(object sender, RoutedEventArgs e) => ViewModel.Reconnect();
+
+    private void OnRestart(object sender, RoutedEventArgs e) => App.Current.Restart();
+
+    private async void OnInstallDriver(object sender, RoutedEventArgs e) => await DriverActions.InstallAsync(XamlRoot);
+
+    private void OnRefresh(object sender, RoutedEventArgs e) => ViewModel.Refresh();
 
     private void OnLicense(object sender, RoutedEventArgs e) => Open("LICENSE.txt");
 

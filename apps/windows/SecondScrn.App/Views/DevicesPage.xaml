@@ -6,15 +6,13 @@
     xmlns:vm="using:SecondScrn.ViewModels">
     <ScrollViewer>
         <StackPanel Padding="32,24" Spacing="12" MaxWidth="1000">
-            <TextBlock Text="Devices" Style="{StaticResource PageTitle}" />
-            <Border Style="{StaticResource Card}">
+            <TextBlock Text="Tablets" Style="{StaticResource PageTitle}" />
+            <Border Style="{StaticResource Card}" Visibility="{x:Bind NoDevicesVisibility, Mode=OneWay}">
                 <StackPanel Spacing="4">
                     <TextBlock Text="Pair a new tablet" Style="{StaticResource BodyStrongTextBlockStyle}" />
                     <TextBlock TextWrapping="Wrap" Text="Open SecondScrn on the tablet and choose this PC. The tablet shows a 6-digit code; SecondScrn asks you for it here. Only paired tablets can connect or send input." />
                 </StackPanel>
             </Border>
-            <TextBlock Text="Paired tablets" Style="{StaticResource SectionTitle}" />
-            <TextBlock Text="No tablets are paired yet." Visibility="{x:Bind NoDevicesVisibility, Mode=OneWay}" Style="{StaticResource Caption}" />
             <ItemsControl ItemsSource="{x:Bind ViewModel.Devices}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:DeviceItem">
@@ -35,7 +33,7 @@
                                 </StackPanel>
                                 <ComboBox Grid.Column="1" Header="Preset" MinWidth="170" Tag="{x:Bind}"
                                           SelectedIndex="{x:Bind PresetIndex}" SelectionChanged="OnPresetChanged">
-                                    <x:String>Use global setting</x:String>
+                                    <x:String>Default preset</x:String>
                                     <x:String>Automatic</x:String>
                                     <x:String>High quality</x:String>
                                     <x:String>Smooth</x:String>
@@ -49,6 +47,8 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
+            <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Visibility="{x:Bind HasDevicesVisibility, Mode=OneWay}"
+                       Text="A tablet's preset is remembered for it; choosing one on Home or on the tablet changes it here too. To pair another tablet, open SecondScrn on it and choose this PC." />
         </StackPanel>
     </ScrollViewer>
 </Page>

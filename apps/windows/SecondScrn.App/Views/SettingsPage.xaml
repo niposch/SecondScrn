@@ -7,29 +7,72 @@
         <StackPanel Padding="32,24" Spacing="12" MaxWidth="1000">
             <TextBlock Text="Settings" Style="{StaticResource PageTitle}" />
 
+            <InfoBar IsOpen="{x:Bind ViewModel.NeedsReconnect, Mode=OneWay}" IsClosable="False" Severity="Informational"
+                     Title="Reconnect the tablet to apply"
+                     Message="Some changes apply when a tablet connects.">
+                <InfoBar.ActionButton>
+                    <Button Content="Reconnect now" Click="OnReconnect" />
+                </InfoBar.ActionButton>
+            </InfoBar>
+            <InfoBar IsOpen="{x:Bind ViewModel.RestartRequired, Mode=OneWay}" IsClosable="False" Severity="Informational"
+                     Title="Restart SecondScrn to switch GPUs"
+                     Message="Windows assigns SecondScrn to a GPU when it starts. A connected tablet reconnects after the restart.">
+                <InfoBar.ActionButton>
+                    <Button Content="Restart now" Click="OnRestart" />
+                </InfoBar.ActionButton>
+            </InfoBar>
+
             <Border Style="{StaticResource Card}">
                 <StackPanel Spacing="12">
-                    <TextBlock Text="Application" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <TextBlock Text="Quality" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <StackPanel Spacing="4">
+                        <ComboBox Header="Default preset" ItemsSource="{x:Bind ViewModel.Presets}"
+                                  SelectedIndex="{x:Bind ViewModel.DefaultPresetIndex, Mode=TwoWay}" MinWidth="260" />
+                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                   Text="For tablets without a preset of their own. Choosing a preset on Home or on the tablet gives that tablet its own. Automatic: full resolution at 60 fps. High quality: about twice the bitrate. Smooth: 75 % resolution at up to 120 fps. Weak Wi-Fi: 67 % resolution at 30 fps." />
+                    </StackPanel>
+                    <ComboBox Header="Highest frame rate" ItemsSource="{x:Bind ViewModel.FpsLimitOptions}"
+                              SelectedIndex="{x:Bind ViewModel.FpsLimitIndex, Mode=TwoWay}" MinWidth="260" />
+                    <StackPanel Orientation="Horizontal" Spacing="16">
+                        <ToggleSwitch Header="Limit bitrate" IsOn="{x:Bind ViewModel.LimitBitrate, Mode=TwoWay}" />
+                        <NumberBox Header="Mbit/s" Minimum="1" Maximum="150" SpinButtonPlacementMode="Inline" Width="160"
+                                   Value="{x:Bind ViewModel.MaxBitrate, Mode=TwoWay}"
+                                   Visibility="{x:Bind ViewModel.BitrateLimitVisibility, Mode=OneWay}" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                               Text="The limits apply to every preset and tablet; lower them if your PC or network can't keep up." />
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Tablet monitor" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="{x:Bind ViewModel.DriverTitle, Mode=OneWay}" />
+                        <TextBlock Text="{x:Bind ViewModel.DriverDetail, Mode=OneWay}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                   Text="The tablet appears as a monitor through the open-source Virtual Display Driver (MIT licence, signed). It is installed once and not changed by app updates." />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="Install driver…" Visibility="{x:Bind ViewModel.DriverInstallVisibility, Mode=OneWay}" Click="OnInstallDriver" Style="{StaticResource AccentButtonStyle}" />
+                        <Button Content="Check again" Click="OnRefresh" />
+                    </StackPanel>
+                    <StackPanel Spacing="4">
+                        <ComboBox Header="After the tablet disconnects, keep its monitor for" ItemsSource="{x:Bind ViewModel.LingerOptions}"
+                                  SelectedIndex="{x:Bind ViewModel.LingerIndex, Mode=TwoWay}" MinWidth="260" />
+                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                   Text="Short Wi-Fi interruptions then don't move your windows back to the main screen." />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="App" Style="{StaticResource BodyStrongTextBlockStyle}" />
                     <ToggleSwitch Header="Start with Windows" IsOn="{x:Bind ViewModel.StartWithWindows, Mode=TwoWay}" />
                     <ToggleSwitch Header="Start minimized to the notification area" IsOn="{x:Bind ViewModel.StartMinimized, Mode=TwoWay}" />
                     <ToggleSwitch Header="Closing the window keeps SecondScrn running in the notification area" IsOn="{x:Bind ViewModel.CloseToTray, Mode=TwoWay}" />
                     <ComboBox Header="Appearance" ItemsSource="{x:Bind ViewModel.Themes}" SelectedIndex="{x:Bind ViewModel.ThemeIndex, Mode=TwoWay}" MinWidth="260" />
-                </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource Card}">
-                <StackPanel Spacing="12">
-                    <TextBlock Text="Network" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <TextBox Header="Name shown to tablets (empty = computer name)" Text="{x:Bind ViewModel.HostNameSetting, Mode=TwoWay}" MaxWidth="420" HorizontalAlignment="Left" Width="420" />
-                    <ToggleSwitch Header="Let tablets on this network find this PC automatically" IsOn="{x:Bind ViewModel.Discoverable, Mode=TwoWay}" />
-                    <NumberBox Header="Port" Minimum="1024" Maximum="65535" Width="200" HorizontalAlignment="Left" Value="{x:Bind ViewModel.Port, Mode=TwoWay}" />
-                    <TextBlock Style="{StaticResource Caption}" Text="All connections are encrypted and only paired tablets are accepted. If Windows Firewall asks, allow SecondScrn on private networks." />
-                </StackPanel>
-            </Border>
-
-            <Border Style="{StaticResource Card}">
-                <StackPanel Spacing="12">
-                    <TextBlock Text="Updates" Style="{StaticResource BodyStrongTextBlockStyle}" />
                     <ToggleSwitch Header="Check for updates at startup" IsOn="{x:Bind ViewModel.CheckForUpdates, Mode=TwoWay}" />
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button x:Name="CheckButton" Content="Check now" Click="OnCheckUpdates" />
@@ -41,10 +84,27 @@
 
             <Border Style="{StaticResource Card}">
                 <StackPanel Spacing="12">
-                    <TextBlock Text="Troubleshooting" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <ToggleSwitch Header="Detailed logging (takes effect after restart)" IsOn="{x:Bind ViewModel.VerboseLogging, Mode=TwoWay}" />
+                    <TextBlock Text="Network" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <TextBox Header="Name shown to tablets (empty = computer name)" Text="{x:Bind ViewModel.HostNameSetting, Mode=TwoWay}" HorizontalAlignment="Left" Width="420" />
+                    <ToggleSwitch Header="Let tablets on this network find this PC automatically" IsOn="{x:Bind ViewModel.Discoverable, Mode=TwoWay}" />
+                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Text="All connections are encrypted and only paired tablets are accepted. If Windows Firewall asks, allow SecondScrn on private networks." />
                 </StackPanel>
             </Border>
+
+            <Expander Header="Advanced" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                <StackPanel Spacing="12">
+                    <ComboBox Header="Video codec" ItemsSource="{x:Bind ViewModel.Codecs}" SelectedIndex="{x:Bind ViewModel.CodecIndex, Mode=TwoWay}" MinWidth="260" />
+                    <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.EncoderGpuChoiceVisibility, Mode=OneWay}">
+                        <ComboBox Header="Encode on" ItemsSource="{x:Bind ViewModel.EncoderGpuOptions, Mode=OneWay}"
+                                  SelectedIndex="{x:Bind ViewModel.EncoderGpuIndex, Mode=TwoWay}" MinWidth="260" />
+                        <InfoBar IsOpen="{x:Bind ViewModel.HasEncoderGpuProblem, Mode=OneWay}" IsClosable="False" Severity="Warning"
+                                 Title="Encoder unavailable" Message="{x:Bind ViewModel.EncoderGpuProblem, Mode=OneWay}" />
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.ActiveEncoderText, Mode=OneWay}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                    <NumberBox Header="Port" Minimum="1024" Maximum="65535" Width="200" HorizontalAlignment="Left" Value="{x:Bind ViewModel.Port, Mode=TwoWay}" />
+                    <ToggleSwitch Header="Detailed logging (takes effect after restart)" IsOn="{x:Bind ViewModel.VerboseLogging, Mode=TwoWay}" />
+                </StackPanel>
+            </Expander>
 
             <Border Style="{StaticResource Card}">
                 <StackPanel Spacing="6">

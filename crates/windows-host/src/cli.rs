@@ -14,13 +14,14 @@ fn parse_codec(s: &str) -> Result<Codec> {
     })
 }
 
-/// `SECONDSCRN_ENCODER_GPU=integrated` picks the integrated GPU's encoders;
-/// the dedicated GPU's otherwise (when it has working ones).
-fn preferred_gpu() -> secondscrn_session::settings::EncoderGpu {
+/// `SECONDSCRN_ENCODER_GPU=integrated|dedicated` prefers that GPU's
+/// encoders; the GPU Windows runs the CLI on otherwise.
+fn preferred_gpu() -> Option<secondscrn_session::settings::EncoderGpu> {
     use secondscrn_session::settings::EncoderGpu;
     match std::env::var("SECONDSCRN_ENCODER_GPU").as_deref() {
-        Ok("integrated") => EncoderGpu::Integrated,
-        _ => EncoderGpu::Dedicated,
+        Ok("integrated") => Some(EncoderGpu::Integrated),
+        Ok("dedicated") => Some(EncoderGpu::Dedicated),
+        _ => None,
     }
 }
 
@@ -85,14 +86,89 @@ pub fn main() -> Result<()> {
                 }
             }
         }
+        Some("ltr-check") => {
+            // Recovery with long-term references, verified with ffmpeg.
+            let dir = std::env::temp_dir().join("secondscrn-ltr-check");
+            std::fs::create_dir_all(&dir)?;
+            let inv = encoder::probe(preferred_gpu());
+            for (_, desc) in &inv.selected {
+                let (full, lossy, ltr) = crate::bench::reference_check(desc, 1920, 1080)?;
+                let ext = match desc.codec {
+                    Codec::H264 => "h264",
+                    Codec::H265 => "hevc",
+                    Codec::Av1 => "obu",
+                };
+                let (fp, lp) = (dir.join(format!("full.{ext}")), dir.join(format!("lossy.{ext}")));
+                std::fs::write(&fp, &full)?;
+                std::fs::write(&lp, &lossy)?;
+                let hashes = |p: &std::path::Path| -> Result<(Vec<String>, String)> {
+                    let out = std::process::Command::new("ffmpeg")
+                        .args(["-v", "error", "-i"])
+                        .arg(p)
+                        .args(["-f", "framemd5", "-"])
+                        .output()
+                        .context("ffmpeg")?;
+                    let md5s = String::from_utf8_lossy(&out.stdout)
+                        .lines()
+                        .filter(|l| !l.starts_with('#'))
+                        .filter_map(|l| l.rsplit(',').next().map(|h| h.trim().to_string()))
+                        .collect();
+                    Ok((md5s, String::from_utf8_lossy(&out.stderr).trim().to_string()))
+                };
+                let ((full_md5, _), (lossy_md5, errors)) = (hashes(&fp)?, hashes(&lp)?);
+                let lost = crate::bench::REF_LOST.len();
+                let recovered = lossy_md5.len() + lost == full_md5.len()
+                    && lossy_md5[crate::bench::REF_LOST.start as usize..]
+                        == full_md5[crate::bench::REF_LOST.end as usize..];
+                let tail = lossy_md5.iter().rev().zip(full_md5.iter().rev()).take_while(|(a, b)| a == b).count();
+                println!("    identical: last {tail} pictures (recovery at {})", crate::bench::REF_LOST.end);
+                println!(
+                    "{} ({}): references {}, lossy stream {} frames (of {}), decode errors: {}, pictures after recovery {}",
+                    desc.name,
+                    desc.codec,
+                    if ltr { "accepted" } else { "not supported" },
+                    lossy_md5.len(),
+                    full_md5.len(),
+                    if errors.is_empty() {
+                        "none".to_string()
+                    } else {
+                        errors.lines().take(3).collect::<Vec<_>>().join(" | ")
+                    },
+                    if recovered { "IDENTICAL" } else { "DIFFERENT" }
+                );
+            }
+            println!("streams in {}", dir.display());
+        }
+        Some("codecapi") => {
+            // Optional encoder controls per selected encoder.
+            let inv = encoder::probe(preferred_gpu());
+            for (_, desc) in &inv.selected {
+                let gpu = crate::d3d::create(desc.luid)?;
+                let settings = encoder::EncoderSettings {
+                    codec: desc.codec,
+                    width: 1920,
+                    height: 1080,
+                    fps: 60,
+                    bitrate_bps: 20_000_000,
+                    color: secondscrn_protocol::ColorInfo::SDR_BT709_LIMITED,
+                };
+                let enc = encoder::Encoder::new(&gpu, desc, settings, |_| true)?;
+                println!("{} ({}):", desc.name, desc.codec);
+                for (name, ok) in enc.supported_controls() {
+                    println!("    {name:30} {}", if ok { "yes" } else { "no" });
+                }
+            }
+        }
         Some("adapters") => {
             for (_, a) in crate::d3d::adapters()? {
                 println!(
-                    "{:016x} {:40} vram {:>6} MB software={}",
+                    "{:016x} {:40} vram {:>6} MB software={} {:?} (unified memory: {:?})",
                     crate::d3d::luid_to_u64(a.luid),
                     a.name,
                     a.dedicated_video_memory >> 20,
-                    a.software
+                    a.software,
+                    a.kind(),
+                    a.unified_memory
                 );
             }
             for c in Codec::ALL {
