@@ -76,6 +76,18 @@ fn pixel(display_device: &str, x: f32, y: f32) -> Result<POINT> {
     })
 }
 
+/// Maps normalised display coordinates to the location synthetic pointer
+/// devices expect. Despite the documentation, `InjectSyntheticPointerInput`
+/// reads `ptPixelLocation` relative to the virtual desktop's top-left corner,
+/// not as screen coordinates: with a monitor left of or above the primary
+/// (negative origin), screen coordinates land shifted by that origin, often
+/// off the desktop where Windows drops them.
+fn pointer_pixel(display_device: &str, x: f32, y: f32) -> Result<POINT> {
+    let p = pixel(display_device, x, y)?;
+    let (vx, vy) = unsafe { (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN)) };
+    Ok(POINT { x: p.x - vx, y: p.y - vy })
+}
+
 /// Maps normalised display coordinates to absolute virtual-desktop units
 /// (0..=65535) as required by `MOUSEEVENTF_VIRTUALDESK`.
 fn absolute(display_device: &str, x: f32, y: f32) -> Result<(i32, i32)> {
@@ -300,7 +312,7 @@ impl Injector {
         let mut infos = Vec::with_capacity(frame.len() + self.contacts.len());
         let mut lifted = Vec::new();
         for c in frame {
-            let at = pixel(display_device, c.x, c.y)?;
+            let at = pointer_pixel(display_device, c.x, c.y)?;
             let known = self.contacts.iter().position(|k| k.id == c.id);
             let lifting = matches!(c.action, PointerAction::Up | PointerAction::Cancel);
             let (slot, primary, flags) = match known {
@@ -432,7 +444,7 @@ impl Injector {
         barrel: bool,
         eraser: bool,
     ) -> Result<()> {
-        let at = pixel(display_device, x, y)?;
+        let at = pointer_pixel(display_device, x, y)?;
         let touching = self.pen_contact.is_some();
         let contact = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_FIRSTBUTTON;
         let flags = match (action, touching) {

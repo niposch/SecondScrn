@@ -1,5 +1,5 @@
 /target/
-**/bin/
+apps/windows/**/bin/
 **/obj/
 *.user
 .vs/
