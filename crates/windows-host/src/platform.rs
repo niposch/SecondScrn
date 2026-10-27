@@ -3,13 +3,14 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use secondscrn_protocol::{CodecCapability, InputEvent, StreamConfig};
+use secondscrn_protocol::{Codec, CodecCapability, InputEvent, StreamConfig};
 use secondscrn_session::platform::{
     DisplayInfo, DisplayLease, DisplayPlan, DriverStatus, HostPlatform, PipelineSink, PlatformError, PlatformErrorKind,
     VideoPipeline,
 };
+use secondscrn_session::settings::EncoderGpu;
 
-use crate::encoder::{self, EncoderDescriptor};
+use crate::encoder;
 use crate::pipeline::WindowsPipeline;
 use crate::virtual_display::VirtualDisplayManager;
 use crate::{capture, display, input, vdd};
@@ -25,18 +26,25 @@ pub enum DisplaySource {
 }
 
 pub struct WindowsHostPlatform {
-    encoders: Mutex<Vec<(CodecCapability, EncoderDescriptor)>>,
+    encoders: Mutex<encoder::Inventory>,
+    /// The GPU whose encoders are preferred (user setting).
+    prefer: Mutex<EncoderGpu>,
     displays: VirtualDisplayManager,
     source: DisplaySource,
     input: Mutex<input::Injector>,
 }
 
+fn probe(prefer: EncoderGpu) -> encoder::Inventory {
+    let inv = encoder::probe(prefer);
+    if inv.selected.is_empty() {
+        tracing::error!("no working hardware video encoder found");
+    }
+    inv
+}
+
 impl WindowsHostPlatform {
-    pub fn new(source: DisplaySource) -> Self {
-        let encoders = encoder::probe();
-        if encoders.is_empty() {
-            tracing::error!("no working hardware video encoder found");
-        }
+    pub fn new(source: DisplaySource, prefer: EncoderGpu) -> Self {
+        let encoders = probe(prefer);
         if matches!(source, DisplaySource::Virtual) {
             // A previous run that crashed may have left the virtual monitor
             // attached; no session exists yet, so remove it.
@@ -47,6 +55,7 @@ impl WindowsHostPlatform {
         }
         WindowsHostPlatform {
             encoders: Mutex::new(encoders),
+            prefer: Mutex::new(prefer),
             displays: VirtualDisplayManager::default(),
             source,
             input: Mutex::default(),
@@ -58,7 +67,27 @@ impl WindowsHostPlatform {
     }
 
     pub fn reprobe(&self) {
-        *self.encoders.lock().unwrap_or_else(|e| e.into_inner()) = encoder::probe();
+        let prefer = *self.prefer.lock().unwrap_or_else(|e| e.into_inner());
+        *self.encoders.lock().unwrap_or_else(|e| e.into_inner()) = probe(prefer);
+    }
+
+    /// Prefers `gpu`'s encoders from the next stream on (re-probes).
+    pub fn set_encoder_gpu(&self, gpu: EncoderGpu) {
+        *self.prefer.lock().unwrap_or_else(|e| e.into_inner()) = gpu;
+        self.reprobe();
+    }
+
+    /// Every GPU with hardware encoders, and what works on it in this process.
+    pub fn gpus(&self) -> Vec<encoder::GpuEncoders> {
+        self.encoders.lock().unwrap_or_else(|e| e.into_inner()).gpus.clone()
+    }
+
+    /// The GPU the selected encoders run on, if any.
+    pub fn active_gpu(&self) -> Option<(String, EncoderGpu)> {
+        let inv = self.encoders.lock().unwrap_or_else(|e| e.into_inner());
+        // H.265 is what tablets normally negotiate; any codec otherwise.
+        let pick = inv.selected.iter().find(|(c, _)| c.codec == Codec::H265).or(inv.selected.first());
+        pick.map(|(_, d)| (d.gpu.clone(), d.kind))
     }
 
     /// Detaches the virtual monitor if no session uses it (application exit).
@@ -82,7 +111,7 @@ impl DisplayLease for ExistingMonitor {
 
 impl HostPlatform for WindowsHostPlatform {
     fn encoders(&self) -> Vec<CodecCapability> {
-        self.encoders.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(c, _)| c.clone()).collect()
+        self.encoders.lock().unwrap_or_else(|e| e.into_inner()).selected.iter().map(|(c, _)| c.clone()).collect()
     }
 
     fn driver_status(&self) -> DriverStatus {
@@ -139,7 +168,7 @@ impl HostPlatform for WindowsHostPlatform {
     ) -> Result<Box<dyn VideoPipeline>, PlatformError> {
         let desc = {
             let enc = self.encoders.lock().unwrap_or_else(|e| e.into_inner());
-            encoder::ensure_supported(&enc, config.codec)
+            encoder::ensure_supported(&enc.selected, config.codec)
                 .map_err(|e| PlatformError::new(PlatformErrorKind::Encoder, e.to_string()))?
                 .clone()
         };

@@ -131,6 +131,17 @@ public partial class App : Application
         Exit();
     }
 
+    /// <summary>
+    /// Starts a new instance and quits (e.g. so Windows assigns another GPU).
+    /// The new instance waits for this one to exit before it registers.
+    /// </summary>
+    public void Restart()
+    {
+        if (Environment.ProcessPath is not { } exe) return;
+        System.Diagnostics.Process.Start(exe, $"{Program.RestartedFrom} {Environment.ProcessId}");
+        Quit();
+    }
+
     private void Shutdown()
     {
         _popup?.Close();

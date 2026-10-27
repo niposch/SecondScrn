@@ -24,9 +24,41 @@
             </Border>
             <Border Style="{StaticResource Card}">
                 <StackPanel Spacing="8">
-                    <TextBlock Text="Hardware encoders" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <TextBlock Text="Video encoder" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.EncoderGpuChoiceVisibility, Mode=OneWay}">
+                        <ComboBox Header="Encode on" ItemsSource="{x:Bind ViewModel.EncoderGpuOptions, Mode=OneWay}"
+                                  SelectedIndex="{x:Bind ViewModel.EncoderGpuIndex, Mode=TwoWay}" MinWidth="260" />
+                        <InfoBar IsOpen="{x:Bind ViewModel.RestartRequired, Mode=OneWay}" IsClosable="False" Severity="Informational"
+                                 Title="Restart SecondScrn to switch GPUs"
+                                 Message="Windows assigns SecondScrn to a GPU when it starts. A connected tablet reconnects after the restart.">
+                            <InfoBar.ActionButton>
+                                <Button Content="Restart now" Click="OnRestart" />
+                            </InfoBar.ActionButton>
+                        </InfoBar>
+                        <InfoBar IsOpen="{x:Bind ViewModel.HasEncoderGpuProblem, Mode=OneWay}" IsClosable="False" Severity="Warning"
+                                 Title="Encoder unavailable" Message="{x:Bind ViewModel.EncoderGpuProblem, Mode=OneWay}" />
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.ActiveEncoderText, Mode=OneWay}" TextWrapping="Wrap" />
                     <TextBlock Text="{x:Bind ViewModel.EncodersText, Mode=OneWay}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
                     <TextBlock Style="{StaticResource Caption}" Text="Only encoders that were verified to work are listed. SecondScrn never falls back to software encoding." />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource Card}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Encoder benchmark" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                               Text="Measures how many frames per second each GPU encodes at a resolution, with the whole screen scrolling (harder than typical desktop use). Screen capture and Wi-Fi are not included, so a real stream can be somewhat slower. Every GPU is measured, whichever is selected above." />
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <ComboBox Header="Resolution" ItemsSource="{x:Bind ViewModel.BenchSizeOptions, Mode=OneWay}"
+                                  SelectedIndex="{x:Bind ViewModel.BenchSizeIndex, Mode=TwoWay}" MinWidth="220" />
+                        <ComboBox Header="Frame rate" ItemsSource="{x:Bind ViewModel.BenchFpsOptions}"
+                                  SelectedIndex="{x:Bind ViewModel.BenchFpsIndex, Mode=TwoWay}" MinWidth="120" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Content="Run benchmark" Click="OnBenchmark" IsEnabled="{x:Bind ViewModel.CanRunBenchmark, Mode=OneWay}" />
+                        <ProgressRing IsActive="{x:Bind ViewModel.BenchmarkRunning, Mode=OneWay}" Width="20" Height="20" />
+                    </StackPanel>
+                    <TextBlock Text="{x:Bind ViewModel.BenchmarkText, Mode=OneWay}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
                 </StackPanel>
             </Border>
         </StackPanel>

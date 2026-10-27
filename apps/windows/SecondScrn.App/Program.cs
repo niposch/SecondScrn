@@ -7,6 +7,9 @@ namespace SecondScrn;
 
 public static class Program
 {
+    /// <summary>Argument of a restarted instance: the previous one's process ID.</summary>
+    internal const string RestartedFrom = "--restarted-from";
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -23,6 +26,22 @@ public static class Program
             })
             .Run();
         WinRT.ComWrappersSupport.InitializeComWrappers();
+
+        // A restart: let the previous instance release the single-instance
+        // key (and the virtual monitor) first.
+        var i = Array.IndexOf(args, RestartedFrom);
+        if (i >= 0 && i + 1 < args.Length && int.TryParse(args[i + 1], out var pid))
+        {
+            try
+            {
+                using var previous = System.Diagnostics.Process.GetProcessById(pid);
+                previous.WaitForExit(TimeSpan.FromSeconds(20));
+            }
+            catch (ArgumentException)
+            {
+                // Already gone.
+            }
+        }
 
         // Single instance: a second launch activates the running app.
         var main = AppInstance.FindOrRegisterForKey("SecondScrn");

@@ -38,7 +38,11 @@ pub fn run(args: &[String]) -> Result<()> {
         i += 1;
     }
     let logs = secondscrn_diagnostics::LogBuffer::new(5000);
-    let platform = Arc::new(WindowsHostPlatform::new(source));
+    let prefer = secondscrn_session::settings::load::<secondscrn_session::settings::HostSettings>(
+        &data_dir.join("settings.json"),
+    )
+    .encoder_gpu;
+    let platform = Arc::new(WindowsHostPlatform::new(source, prefer));
     let engine = HostEngine::start(
         HostConfig {
             data_dir,

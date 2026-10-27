@@ -58,6 +58,11 @@ unsafe extern "C" {
     fn ASurfaceTransaction_apply(t: *mut ASurfaceTransaction);
     fn ASurfaceTransaction_setOnComplete(t: *mut ASurfaceTransaction, context: *mut c_void, func: OnComplete);
     fn ASurfaceTransaction_setVisibility(t: *mut ASurfaceTransaction, sc: *mut ASurfaceControl, visibility: i8);
+    fn ASurfaceTransaction_reparent(
+        t: *mut ASurfaceTransaction,
+        sc: *mut ASurfaceControl,
+        new_parent: *mut ASurfaceControl,
+    );
     fn ASurfaceTransaction_setBuffer(
         t: *mut ASurfaceTransaction,
         sc: *mut ASurfaceControl,
@@ -222,6 +227,10 @@ impl Presenter {
                 unsafe {
                     let t = ASurfaceTransaction_create();
                     ASurfaceTransaction_setVisibility(t, sc, VISIBILITY_HIDE);
+                    // Releasing the handle alone keeps the layer (and its
+                    // last picture) in the window's hierarchy until the
+                    // window goes away: one dead layer per stream change.
+                    ASurfaceTransaction_reparent(t, sc, std::ptr::null_mut());
                     ASurfaceTransaction_apply(t);
                     ASurfaceTransaction_delete(t);
                     ASurfaceControl_release(sc);

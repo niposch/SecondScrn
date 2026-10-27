@@ -18,6 +18,18 @@ pub enum Theme {
     Dark,
 }
 
+/// Which GPU encodes the stream on PCs with more than one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EncoderGpu {
+    /// The processor's graphics: uses less power (longer battery life).
+    #[default]
+    Integrated,
+    /// A dedicated graphics card: more headroom for high resolutions and
+    /// frame rates, at the cost of power.
+    Dedicated,
+}
+
 /// Per-tablet preferences on the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -56,6 +68,7 @@ pub struct HostSettings {
     pub preset: QualityPreset,
     /// Force a codec instead of automatic negotiation.
     pub preferred_codec: Option<Codec>,
+    pub encoder_gpu: EncoderGpu,
     pub max_fps: u32,
     /// Upper bitrate bound in Mbit/s; 0 = automatic.
     pub max_bitrate_mbps: u32,
@@ -81,6 +94,7 @@ impl Default for HostSettings {
             discoverable: true,
             preset: QualityPreset::Automatic,
             preferred_codec: None,
+            encoder_gpu: EncoderGpu::Integrated,
             max_fps: 60,
             max_bitrate_mbps: 0,
             display_linger_secs: 30,

@@ -14,21 +14,75 @@ fn parse_codec(s: &str) -> Result<Codec> {
     })
 }
 
+/// `SECONDSCRN_ENCODER_GPU=integrated` picks the integrated GPU's encoders;
+/// the dedicated GPU's otherwise (when it has working ones).
+fn preferred_gpu() -> secondscrn_session::settings::EncoderGpu {
+    use secondscrn_session::settings::EncoderGpu;
+    match std::env::var("SECONDSCRN_ENCODER_GPU").as_deref() {
+        Ok("integrated") => EncoderGpu::Integrated,
+        _ => EncoderGpu::Dedicated,
+    }
+}
+
 pub fn main() -> Result<()> {
     crate::init_dpi_awareness();
     tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("probe") => {
-            for (cap, desc) in encoder::probe() {
+            let inv = encoder::probe(preferred_gpu());
+            for g in &inv.gpus {
+                let codecs: Vec<String> = g.codecs.iter().map(|c| c.to_string()).collect();
+                println!("{:?} GPU {}: {}", g.kind, g.name, codecs.join(", "));
+                if let Some(p) = &g.problem {
+                    println!("    {p}");
+                }
+            }
+            for (cap, desc) in &inv.selected {
                 println!(
-                    "{:5} {:45} max {}x{} adapter {:?}",
+                    "{:5} {:45} max {}x{} on {}",
                     cap.codec.to_string(),
                     cap.implementation,
                     cap.max_width,
                     cap.max_height,
-                    desc.luid.map(crate::d3d::luid_to_u64)
+                    desc.gpu
                 );
+            }
+        }
+        Some("bench") => {
+            let usage = "usage: bench <width>x<height> <fps> [seconds] [--gpu integrated|dedicated] [--json]";
+            let (size, fps) = (args.get(1).context(usage)?, args.get(2).context(usage)?);
+            let (w, h) = size.split_once('x').context(usage)?;
+            let seconds = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2.0);
+            let kind = match args.iter().position(|a| a == "--gpu").and_then(|i| args.get(i + 1)).map(String::as_str) {
+                Some("integrated") => Some(secondscrn_session::settings::EncoderGpu::Integrated),
+                Some("dedicated") => Some(secondscrn_session::settings::EncoderGpu::Dedicated),
+                Some(_) => bail!(usage),
+                None => None,
+            };
+            let report = crate::bench::run(w.parse()?, h.parse()?, fps.parse()?, seconds, kind);
+            if report.results.is_empty() {
+                eprintln!("no GPU with a hardware encoder found");
+            }
+            if args.iter().any(|a| a == "--json") {
+                println!("{}", serde_json::to_string(&report)?);
+            } else {
+                for r in &report.results {
+                    match &r.error {
+                        Some(e) => println!("{:?} {}: {e}", r.kind, r.gpu),
+                        None => println!(
+                            "{:?} {} ({}): {:.0} of {} fps, {:.1} ms (p95 {:.1} ms), up to {:.0} fps",
+                            r.kind,
+                            r.gpu,
+                            r.encoder,
+                            r.paced_fps,
+                            report.fps,
+                            r.latency_ms,
+                            r.latency_p95_ms,
+                            r.max_fps
+                        ),
+                    }
+                }
             }
         }
         Some("adapters") => {
@@ -71,8 +125,8 @@ pub fn main() -> Result<()> {
                 capture::monitor_by_device(dev)
             }
             .context("monitor not found")?;
-            let caps = encoder::probe();
-            let desc = encoder::ensure_supported(&caps, codec)?.clone();
+            let inv = encoder::probe(preferred_gpu());
+            let desc = encoder::ensure_supported(&inv.selected, codec)?.clone();
             let (w, h) =
                 ((monitor.rect.right - monitor.rect.left) as u32, (monitor.rect.bottom - monitor.rect.top) as u32);
             let config = StreamConfig {
@@ -179,7 +233,9 @@ pub fn main() -> Result<()> {
         }
         Some("serve") => crate::serve::run(&args[1..])?,
         _ => {
-            eprintln!("commands: probe | monitors | record <device|primary> <codec> <seconds> <file> | serve");
+            eprintln!(
+                "commands: probe | adapters | bench <w>x<h> <fps> [seconds] [--json] | monitors | record <device|primary> <codec> <seconds> <file> | serve"
+            );
         }
     }
     Ok(())

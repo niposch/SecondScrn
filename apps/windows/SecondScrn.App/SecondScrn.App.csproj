@@ -34,6 +34,8 @@
     <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\..'))</RepoRoot>
     <RustProfile Condition="'$(RustProfile)' == ''">release</RustProfile>
     <RustDll>$(RepoRoot)\target\$(RustProfile)\secondscrn_host.dll</RustDll>
+    <!-- Runs the encoder benchmark on each GPU (crates/windows-host/src/bench.rs). -->
+    <RustHelper>$(RepoRoot)\target\$(RustProfile)\secondscrn-host-cli.exe</RustHelper>
   </PropertyGroup>
 
   <ItemGroup>
@@ -65,9 +67,12 @@
 
   <ItemGroup>
     <None Include="$(RustDll)" Link="secondscrn_host.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(RustDll)')" />
+    <None Include="$(RustHelper)" Link="secondscrn-host-cli.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('$(RustHelper)')" />
   </ItemGroup>
   <Target Name="CopyRustDll" AfterTargets="Build;Publish">
     <Copy SourceFiles="$(RustDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(RustDll)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(PublishDir)' != ''" />
+    <Copy SourceFiles="$(RustHelper)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(RustHelper)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(PublishDir)' != ''" />
   </Target>
 </Project>

@@ -15,6 +15,8 @@ uniffi::setup_scaffolding!();
 #[cfg(windows)]
 pub mod api;
 #[cfg(windows)]
+pub mod bench;
+#[cfg(windows)]
 pub mod capture;
 #[cfg(windows)]
 pub mod cli;
@@ -28,6 +30,8 @@ pub mod display;
 pub mod dpapi;
 #[cfg(windows)]
 pub mod encoder;
+#[cfg(windows)]
+pub mod gpu;
 #[cfg(windows)]
 pub mod input;
 #[cfg(windows)]

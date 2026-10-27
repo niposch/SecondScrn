@@ -37,7 +37,7 @@ try {
     dotnet publish apps/windows/SecondScrn.App/SecondScrn.App.csproj -c Release -r win-x64 --self-contained `
         -p:Version=$Version -p:RustProfile=release -o $publish
     if ($LASTEXITCODE) { throw 'dotnet publish failed' }
-    foreach ($required in 'secondscrn_host.dll', 'SecondScrn.pri', 'SecondScrn.exe', 'Driver\setup-vdd.ps1', 'THIRD_PARTY_NOTICES.md', 'Licenses\RUST-NOTICES.txt') {
+    foreach ($required in 'secondscrn_host.dll', 'secondscrn-host-cli.exe', 'SecondScrn.pri', 'SecondScrn.exe', 'Driver\setup-vdd.ps1', 'THIRD_PARTY_NOTICES.md', 'Licenses\RUST-NOTICES.txt') {
         if (-not (Test-Path (Join-Path $publish $required))) { throw "$required missing from publish output" }
     }
 

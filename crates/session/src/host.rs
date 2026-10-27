@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use secondscrn_diagnostics::LogBuffer;
 use secondscrn_protocol::{
-    ALPN, ClientMessage, CodecCapability, DeviceInfo, DisplayRequest, HostMessage, InputEvent, Intent,
+    ALPN, ClientMessage, Codec, CodecCapability, DeviceInfo, DisplayRequest, HostMessage, InputEvent, Intent,
     PROTOCOL_VERSION, QualityPreset, RejectReason, StreamConfig,
 };
 use secondscrn_security::pairing::{HostPairing, normalize_pin};
@@ -961,18 +961,20 @@ async fn stream(
     // The tablet reports its panel; the monitor is that panel at `scale`.
     let mut native = display_req;
     let encoders = lock(&inner.encoders).clone();
-    let negotiate_for = |req: DisplayRequest, preset: QualityPreset, fps_cap: u32| {
+    // `codec`: the codec already streaming (WebRTC cannot switch codecs
+    // mid-session), so a new size cannot select another one.
+    let negotiate_for = |req: DisplayRequest, preset: QualityPreset, fps_cap: u32, codec: Option<Codec>| {
         negotiate(&NegotiationInput {
             encoders: &encoders,
             decoders: &decoders,
             display: req,
             preset,
-            forced_codec: settings.preferred_codec,
+            forced_codec: codec.or(settings.preferred_codec),
             client_preferred,
             host_max_fps: fps_cap,
         })
     };
-    let mut config = match negotiate_for(native.scaled(scale), preset, fps_cap) {
+    let mut config = match negotiate_for(native.scaled(scale), preset, fps_cap, None) {
         Ok(c) => c,
         Err(e) => {
             let reason = match e {
@@ -1005,6 +1007,8 @@ async fn stream(
     config.width = display.width;
     config.height = display.height;
     config.scale_percent = native.scale_of(display.width, display.height);
+    config.max_fps = capped_by_refresh(config.max_fps, &display);
+    let mut last_refresh_fix: Option<Instant> = None;
     inner.update_session(id, |s| {
         s.stream = Some(config.clone());
         s.display = Some(display.clone());
@@ -1231,6 +1235,20 @@ async fn stream(
                 inner.update_session(id, |s| s.metrics = m);
                 if mode_changed(lease.as_ref(), &config) {
                     change = Some(DisplayChange::External);
+                } else if let Some(hz) = refresh_changed(lease.as_ref(), &display) {
+                    // Windows may re-apply a remembered refresh rate when the
+                    // topology changes; the stream would silently be capped by
+                    // it. Restore the wanted rate once, otherwise follow it.
+                    let wanted = display_plan(&native, scale, fps_cap).request.refresh_hz;
+                    let may_fix = last_refresh_fix.is_none_or(|t| t.elapsed() > REFRESH_FIX_INTERVAL);
+                    if display.is_virtual && hz != wanted && may_fix {
+                        tracing::warn!(hz, wanted, "virtual monitor refresh rate changed outside SecondScrn; restoring it");
+                        last_refresh_fix = Some(Instant::now());
+                        change = Some(DisplayChange::Plan);
+                    } else {
+                        tracing::info!(hz, "display refresh rate changed; following it");
+                        change = Some(DisplayChange::External);
+                    }
                 }
                 if slowdown.recover() {
                     let t = controller.current();
@@ -1269,14 +1287,19 @@ async fn stream(
                 }
             }
             *lock(&shared_display) = display.clone();
-            if let Ok(c) = negotiate_for(native.scaled(scale), preset, fps_cap)
-                && c.codec == config.codec
-            {
-                config.max_fps = c.max_fps;
-            }
+            config.max_fps = match negotiate_for(native.scaled(scale), preset, fps_cap, Some(config.codec)) {
+                Ok(c) => c.max_fps,
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot renegotiate the stream; using the requested frame rate");
+                    fps_cap.min(native.refresh_hz.max(1))
+                }
+            };
+            config.max_fps = capped_by_refresh(config.max_fps, &display);
             config.width = display.width;
             config.height = display.height;
             config.scale_percent = native.scale_of(display.width, display.height);
+            let (w, h, hz) = (display.width, display.height, display.refresh_hz);
+            tracing::info!(width = w, height = h, hz, fps = config.max_fps, "stream reconfigured");
             if let Some(t) = controller.set_policy(policy_for(&config, preset)) {
                 tracing::debug!(?t, "target after display change");
             }
@@ -1402,6 +1425,23 @@ impl Slowdown {
 fn mode_changed(lease: &dyn DisplayLease, config: &StreamConfig) -> bool {
     let d = lease.info();
     (d.width, d.height) != (config.width, config.height)
+}
+
+/// At most one attempt per this interval to restore a virtual monitor's
+/// refresh rate that changed behind SecondScrn's back; if it doesn't stick,
+/// the stream follows the monitor.
+const REFRESH_FIX_INTERVAL: Duration = Duration::from_secs(30);
+
+/// The leased monitor's refresh rate, if it differs from `known`'s.
+fn refresh_changed(lease: &dyn DisplayLease, known: &DisplayInfo) -> Option<u32> {
+    let hz = lease.info().refresh_hz;
+    (hz != known.refresh_hz).then_some(hz)
+}
+
+/// Capture delivers at most one frame per monitor refresh: a stream faster
+/// than the monitor would only repeat frames.
+fn capped_by_refresh(fps: u32, display: &DisplayInfo) -> u32 {
+    if display.refresh_hz >= 24 { fps.min(display.refresh_hz) } else { fps }
 }
 
 #[cfg(test)]

@@ -310,6 +310,7 @@ impl DisplayLease for VddLease {
             Ok(self.info())
         })();
         r.inspect(|i| {
+            tracing::info!(gdi = %i.id, width = i.width, height = i.height, hz = i.refresh_hz, "virtual monitor reconfigured");
             self.info = i.clone();
         })
         .map_err(|e| PlatformError::new(PlatformErrorKind::Display, format!("{e:#}")))

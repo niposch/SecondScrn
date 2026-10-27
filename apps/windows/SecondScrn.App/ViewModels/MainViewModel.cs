@@ -409,6 +409,99 @@ public sealed partial class MainViewModel : ObservableObject
         set => Push(s => s with { VerboseLogging = value });
     }
 
+    // ---- Encoder GPU --------------------------------------------------------
+
+    private string GpuName(GpuKind kind) =>
+        _s?.EncoderGpu.Gpus.FirstOrDefault(g => g.Kind == kind)?.Name ?? (kind == GpuKind.Integrated ? "integrated GPU" : "dedicated GPU");
+
+    public string[] EncoderGpuOptions =>
+    [
+        $"Integrated graphics ({GpuName(GpuKind.Integrated)}): uses less power",
+        $"Dedicated graphics ({GpuName(GpuKind.Dedicated)}): more headroom, uses more power",
+    ];
+
+    public int EncoderGpuIndex
+    {
+        get => (int)(_s?.Settings.EncoderGpu ?? GpuKind.Integrated);
+        set
+        {
+            if (value < 0) return;
+            Push(s => s with { EncoderGpu = (GpuKind)value });
+        }
+    }
+
+    public Visibility EncoderGpuChoiceVisibility =>
+        _s?.EncoderGpu.ChoiceAvailable == true ? Visibility.Visible : Visibility.Collapsed;
+
+    public bool RestartRequired => _s?.EncoderGpu.RestartRequired == true;
+
+    public bool HasEncoderGpuProblem => !string.IsNullOrEmpty(_s?.EncoderGpu.Problem);
+
+    public string EncoderGpuProblem => _s?.EncoderGpu.Problem is { } p
+        ? $"The {GpuName(_s.Settings.EncoderGpu)} cannot encode, so the other GPU is used. {p}"
+        : "";
+
+    public string ActiveEncoderText
+    {
+        get
+        {
+            var active = _s?.EncoderGpu.Gpus.FirstOrDefault(g => g.Active);
+            return active is null ? "No working hardware encoder." : $"Encoding on {active.Name}.";
+        }
+    }
+
+    // ---- Encoder benchmark --------------------------------------------------
+
+    private static readonly int[] BenchFpsData = [60, 90, 120, 144];
+    private (uint W, uint H)? _lastStreamSize;
+
+    /// Sizes to benchmark: the last tablet stream (this run) first.
+    private (uint W, uint H)[] BenchSizes
+    {
+        get
+        {
+            if (_s?.Session is { Width: > 0 } s) _lastStreamSize = (s.Width, s.Height);
+            (uint, uint)[] common = [(1920, 1200), (2560, 1600), (2880, 1800), (3840, 2160)];
+            return _lastStreamSize is { } last ? [last, .. common.Where(c => c != last)] : common;
+        }
+    }
+
+    public string[] BenchSizeOptions => BenchSizes
+        .Select((z, i) => i == 0 && _lastStreamSize is not null ? $"{z.W} × {z.H} (your tablet)" : $"{z.W} × {z.H}")
+        .ToArray();
+
+    public int BenchSizeIndex { get; set; }
+
+    public int[] BenchFpsOptions => BenchFpsData;
+
+    public int BenchFpsIndex { get; set; } = 2;
+
+    public bool BenchmarkRunning => _s?.Benchmark.Running == true;
+
+    public bool CanRunBenchmark => _s is not null && !BenchmarkRunning;
+
+    public string BenchmarkText
+    {
+        get
+        {
+            var b = _s?.Benchmark;
+            if (b is null || (b.Width == 0 && !b.Running)) return "";
+            if (b.Running) return $"Measuring {b.Width} × {b.Height} at {b.Fps} fps… (about 10 seconds)";
+            if (b.Error is { } e) return $"The benchmark failed: {e}";
+            var lines = b.Results.Select(r => r.Error is { } err
+                ? $"{r.Gpu}: could not be measured ({err})"
+                : $"{(r.PacedFps >= b.Fps * 0.95 ? "✓" : "⚠")} {r.Gpu}: {r.PacedFps:0} of {b.Fps} fps, {r.LatencyMs:0.0} ms per frame, up to {r.MaxFps:0} fps");
+            return $"{b.Width} × {b.Height} at {b.Fps} fps:\n" + string.Join("\n", lines);
+        }
+    }
+
+    internal void RunBenchmark()
+    {
+        var sizes = BenchSizes;
+        var (w, h) = sizes[Math.Clamp(BenchSizeIndex, 0, sizes.Length - 1)];
+        _host.Host.RunBenchmark(w, h, (uint)BenchFpsData[Math.Clamp(BenchFpsIndex, 0, BenchFpsData.Length - 1)]);
+    }
+
     // ---- Commands ----------------------------------------------------------
 
     internal void Disconnect() => _host.Host.Disconnect();

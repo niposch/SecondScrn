@@ -49,7 +49,7 @@ fn virtual_monitor_stream_and_input() {
         HostSettings { control_port: port, discoverable: false, display_linger_secs: 0, ..Default::default() };
     secondscrn_session::settings::save(&host_dir.path().join("settings.json"), &settings).unwrap();
 
-    let platform = Arc::new(WindowsHostPlatform::new(DisplaySource::Virtual));
+    let platform = Arc::new(WindowsHostPlatform::new(DisplaySource::Virtual, Default::default()));
     let host = HostEngine::start(
         HostConfig {
             data_dir: host_dir.path().into(),

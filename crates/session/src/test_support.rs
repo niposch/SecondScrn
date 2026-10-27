@@ -75,6 +75,10 @@ pub struct FakeHostState {
     pub plans: Mutex<Vec<DisplayPlan>>,
     /// Simulates the user changing the mode in the OS display settings.
     pub external_mode: Mutex<Option<(u32, u32)>>,
+    /// Simulates the OS resetting the refresh rate; a reconfiguration
+    /// restores it unless `stubborn_refresh` is set.
+    pub external_refresh: Mutex<Option<u32>>,
+    pub stubborn_refresh: AtomicBool,
     /// The display's scale factor (percent); 0 = default (150).
     pub ui_scale: AtomicU32,
 }
@@ -101,6 +105,9 @@ impl DisplayLease for FakeLease {
         if let Some((w, h)) = *self.state.external_mode.lock().unwrap() {
             (info.width, info.height) = (w, h);
         }
+        if let Some(hz) = *self.state.external_refresh.lock().unwrap() {
+            info.refresh_hz = hz;
+        }
         info
     }
     fn ui_scale(&self) -> Option<UiScale> {
@@ -117,9 +124,13 @@ impl DisplayLease for FakeLease {
     fn reconfigure(&mut self, plan: &DisplayPlan) -> Result<DisplayInfo, PlatformError> {
         self.state.plans.lock().unwrap().push(plan.clone());
         self.state.external_mode.lock().unwrap().take();
+        if !self.state.stubborn_refresh.load(Ordering::SeqCst) {
+            self.state.external_refresh.lock().unwrap().take();
+        }
         self.info.width = plan.request.width;
         self.info.height = plan.request.height;
-        Ok(self.info.clone())
+        self.info.refresh_hz = plan.request.refresh_hz;
+        Ok(self.info())
     }
 }
 

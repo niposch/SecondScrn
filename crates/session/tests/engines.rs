@@ -241,6 +241,34 @@ async fn resolution_follows_tablet_pc_and_windows_settings() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refresh_rate_reset_by_the_os_is_restored_or_followed() {
+    let r = rig().await;
+    streaming(&r).await;
+    let mut cs = r.client.subscribe();
+    let state = r.host_platform.state.clone();
+    let fps = |s: &ClientSnapshot| s.stream.as_ref().map(|c| c.max_fps);
+    assert_eq!(fps(&cs.borrow()), Some(60));
+    let plans = state.plans.lock().unwrap().len();
+
+    // Windows drops the monitor to 30 Hz: the PC restores 60 Hz.
+    *state.external_refresh.lock().unwrap() = Some(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while state.plans.lock().unwrap().len() == plans {
+        assert!(std::time::Instant::now() < deadline, "refresh rate was not restored");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(*state.external_refresh.lock().unwrap(), None);
+    assert_eq!(fps(&cs.borrow()), Some(60));
+
+    // It happens again and doesn't stick: the stream follows the monitor
+    // instead of promising frames capture cannot deliver.
+    state.stubborn_refresh.store(true, Ordering::SeqCst);
+    *state.external_refresh.lock().unwrap() = Some(30);
+    wait(&mut cs, 10, "capped at 30 fps", |s: &ClientSnapshot| fps(s) == Some(30)).await;
+    assert_eq!(r.client.snapshot().phase, ClientPhase::Streaming);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn presets_set_resolution_and_frame_rate() {
     let r = rig().await;
     streaming(&r).await;

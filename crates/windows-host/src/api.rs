@@ -11,7 +11,7 @@ use std::time::Duration;
 use secondscrn_diagnostics::LogBuffer;
 use secondscrn_protocol::{Codec, QualityPreset};
 use secondscrn_session::platform::DriverStatus;
-use secondscrn_session::settings::{DevicePreferences, HostSettings, Theme};
+use secondscrn_session::settings::{DevicePreferences, EncoderGpu, HostSettings, Theme};
 use secondscrn_session::snapshot::{HostSnapshot, LinkHealth, SessionPhase};
 use secondscrn_session::{HostConfig, HostEngine};
 use secondscrn_transport::InterfacePolicy;
@@ -82,6 +82,59 @@ pub enum DriverState {
 pub struct DriverView {
     pub state: DriverState,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum GpuKind {
+    Integrated,
+    Dedicated,
+}
+
+/// A GPU with hardware video encoders.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct GpuView {
+    pub name: String,
+    pub kind: GpuKind,
+    /// Its encoders work in this process.
+    pub usable: bool,
+    /// The selected encoders run on it.
+    pub active: bool,
+    /// Why its encoders don't work, if they don't.
+    pub problem: Option<String>,
+}
+
+/// The encoder GPU choice and whether it is in effect.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct EncoderGpuView {
+    pub gpus: Vec<GpuView>,
+    /// More than one kind of GPU: the choice matters.
+    pub choice_available: bool,
+    /// The chosen GPU becomes usable after SecondScrn restarts.
+    pub restart_required: bool,
+    /// The chosen GPU cannot encode (and a restart won't help).
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BenchResultView {
+    pub gpu: String,
+    pub kind: GpuKind,
+    pub encoder: String,
+    pub paced_fps: f32,
+    pub latency_ms: f32,
+    pub latency_p95_ms: f32,
+    pub max_fps: f32,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BenchmarkView {
+    pub running: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub results: Vec<BenchResultView>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -185,6 +238,7 @@ pub struct SettingsView {
     pub discoverable: bool,
     pub preset: Preset,
     pub preferred_codec: Option<VideoCodec>,
+    pub encoder_gpu: GpuKind,
     pub max_fps: u32,
     pub max_bitrate_mbps: u32,
     pub display_linger_secs: u32,
@@ -208,6 +262,8 @@ pub struct HostState {
     pub devices: Vec<DeviceView>,
     pub driver: DriverView,
     pub encoders: Vec<EncoderView>,
+    pub encoder_gpu: EncoderGpuView,
+    pub benchmark: BenchmarkView,
     pub last_error: Option<String>,
     pub settings: SettingsView,
     pub data_dir: String,
@@ -229,6 +285,20 @@ fn preset_to(p: Preset) -> QualityPreset {
         Preset::Sharp => QualityPreset::Sharp,
         Preset::Smooth => QualityPreset::Smooth,
         Preset::LowBandwidth => QualityPreset::LowBandwidth,
+    }
+}
+
+fn gpu_from(g: EncoderGpu) -> GpuKind {
+    match g {
+        EncoderGpu::Integrated => GpuKind::Integrated,
+        EncoderGpu::Dedicated => GpuKind::Dedicated,
+    }
+}
+
+fn gpu_to(g: GpuKind) -> EncoderGpu {
+    match g {
+        GpuKind::Integrated => EncoderGpu::Integrated,
+        GpuKind::Dedicated => EncoderGpu::Dedicated,
     }
 }
 
@@ -255,6 +325,7 @@ fn settings_from(s: &HostSettings) -> SettingsView {
         discoverable: s.discoverable,
         preset: preset_from(s.preset),
         preferred_codec: s.preferred_codec.map(codec_from),
+        encoder_gpu: gpu_from(s.encoder_gpu),
         max_fps: s.max_fps,
         max_bitrate_mbps: s.max_bitrate_mbps,
         display_linger_secs: s.display_linger_secs,
@@ -277,6 +348,7 @@ fn settings_to(v: SettingsView, mut base: HostSettings) -> HostSettings {
     base.discoverable = v.discoverable;
     base.preset = preset_to(v.preset);
     base.preferred_codec = v.preferred_codec.map(codec_to);
+    base.encoder_gpu = gpu_to(v.encoder_gpu);
     base.max_fps = v.max_fps;
     base.max_bitrate_mbps = v.max_bitrate_mbps;
     base.display_linger_secs = v.display_linger_secs;
@@ -302,7 +374,7 @@ fn health(h: LinkHealth) -> Health {
     }
 }
 
-pub fn to_view(s: &HostSnapshot, data_dir: &str) -> HostState {
+pub fn to_view(s: &HostSnapshot, data_dir: &str, extras: &Extras) -> HostState {
     let session = s.session.as_ref().map(|x| {
         let m = &x.metrics;
         let stream = x.stream.as_ref();
@@ -415,6 +487,8 @@ pub fn to_view(s: &HostSnapshot, data_dir: &str) -> HostState {
                 max_height: e.max_height,
             })
             .collect(),
+        encoder_gpu: extras.encoder_gpu.clone(),
+        benchmark: extras.benchmark.clone(),
         last_error: s.last_error.clone(),
         settings: settings_from(&s.settings),
         data_dir: data_dir.to_string(),
@@ -422,14 +496,189 @@ pub fn to_view(s: &HostSnapshot, data_dir: &str) -> HostState {
     }
 }
 
+/// Host state that lives outside the session engine.
+#[derive(Clone)]
+pub struct Extras {
+    pub encoder_gpu: EncoderGpuView,
+    pub benchmark: BenchmarkView,
+}
+
+/// [`Extras`] plus a change counter the UI watcher polls.
+struct SharedExtras {
+    extras: Mutex<Extras>,
+    generation: std::sync::atomic::AtomicU64,
+}
+
+impl SharedExtras {
+    fn get(&self) -> Extras {
+        self.extras.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn update(&self, f: impl FnOnce(&mut Extras)) {
+        f(&mut self.extras.lock().unwrap_or_else(|e| e.into_inner()));
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The running executable (the app, or the CLI).
+fn current_exe() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok()
+}
+
+/// Makes Windows start SecondScrn on the chosen GPU from the next launch:
+/// the dedicated GPU needs the "high performance" graphics preference (see
+/// [`crate::gpu`]); for the integrated one, a high-performance preference
+/// is removed.
+fn apply_gpu_preference(choice: EncoderGpu) {
+    let Some(exe) = current_exe() else { return };
+    let current = crate::gpu::preference(&exe);
+    let wanted = match choice {
+        EncoderGpu::Dedicated => Some(crate::gpu::HIGH_PERFORMANCE),
+        EncoderGpu::Integrated if current == Some(crate::gpu::HIGH_PERFORMANCE) => None,
+        EncoderGpu::Integrated => current,
+    };
+    if let Err(e) = crate::gpu::set_preference(&exe, wanted) {
+        tracing::warn!(error = format!("{e:#}"), "cannot set the graphics preference");
+    }
+}
+
+fn encoder_gpu_view(platform: &WindowsHostPlatform, choice: EncoderGpu, started_with: Option<u32>) -> EncoderGpuView {
+    let active = platform.active_gpu();
+    let gpus: Vec<GpuView> = platform
+        .gpus()
+        .into_iter()
+        .map(|g| GpuView {
+            active: active.as_ref().is_some_and(|(name, _)| *name == g.name),
+            usable: !g.codecs.is_empty(),
+            kind: gpu_from(g.kind),
+            problem: g.problem,
+            name: g.name,
+        })
+        .collect();
+    let choice_available =
+        gpus.iter().any(|g| g.kind == GpuKind::Integrated) && gpus.iter().any(|g| g.kind == GpuKind::Dedicated);
+    let chosen: Vec<&GpuView> = gpus.iter().filter(|g| g.kind == gpu_from(choice)).collect();
+    let chosen_usable = chosen.iter().any(|g| g.usable);
+    // Windows applies the graphics preference at process start.
+    let pending = current_exe().map(|e| crate::gpu::preference(&e)).unwrap_or(started_with) != started_with;
+    let blocked = !chosen.is_empty() && !chosen_usable;
+    let restart_required = match choice {
+        EncoderGpu::Dedicated => blocked && pending,
+        // Running on the dedicated GPU keeps it powered, and the integrated
+        // GPU's encoder is much slower in such a process.
+        EncoderGpu::Integrated => choice_available && pending && started_with == Some(crate::gpu::HIGH_PERFORMANCE),
+    };
+    EncoderGpuView {
+        choice_available,
+        restart_required,
+        problem: if blocked && !pending { chosen.iter().find_map(|g| g.problem.clone()) } else { None },
+        gpus,
+    }
+}
+
+fn bench_view(r: crate::bench::BenchResult) -> BenchResultView {
+    BenchResultView {
+        gpu: r.gpu,
+        kind: gpu_from(r.kind),
+        encoder: r.encoder,
+        paced_fps: r.paced_fps,
+        latency_ms: r.latency_ms,
+        latency_p95_ms: r.latency_p95_ms,
+        max_fps: r.max_fps,
+        error: r.error,
+    }
+}
+
+/// Runs the benchmark in the helper executable next to the app, once per
+/// kind of GPU with the matching graphics preference: an encoder only shows
+/// its real speed in a process Windows runs on its GPU (see [`crate::bench`]),
+/// and the app's own process is fixed to one GPU when it starts.
+fn run_benchmark_helper(width: u32, height: u32, fps: u32) -> anyhow::Result<Vec<crate::bench::BenchResult>> {
+    use anyhow::Context;
+    let dir = current_exe().and_then(|e| e.parent().map(|p| p.to_path_buf())).context("no executable path")?;
+    let helper = dir.join("secondscrn-host-cli.exe");
+    anyhow::ensure!(helper.exists(), "the benchmark helper is missing ({})", helper.display());
+    let mut results = Vec::new();
+    let gpus = [
+        (EncoderGpu::Integrated, "integrated", None),
+        (EncoderGpu::Dedicated, "dedicated", Some(crate::gpu::HIGH_PERFORMANCE)),
+    ];
+    for (kind, arg, pref) in gpus {
+        let size = format!("{width}x{height}");
+        let fps = fps.to_string();
+        let run = crate::gpu::set_preference(&helper, pref)
+            .and_then(|()| run_helper(&helper, &["bench", &size, &fps, "2", "--gpu", arg, "--json"]));
+        match run {
+            Ok(report) => results.extend(report.results),
+            // One kind failing must not hide the other's results.
+            Err(e) => results.push(crate::bench::BenchResult {
+                gpu: format!("{arg} GPU"),
+                kind,
+                encoder: String::new(),
+                codec: secondscrn_protocol::Codec::H265,
+                paced_fps: 0.0,
+                latency_ms: 0.0,
+                latency_p95_ms: 0.0,
+                max_fps: 0.0,
+                error: Some(format!("{e:#}")),
+            }),
+        }
+    }
+    Ok(results)
+}
+
+fn run_helper(helper: &std::path::Path, args: &[&str]) -> anyhow::Result<crate::bench::BenchReport> {
+    use anyhow::Context;
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut child = std::process::Command::new(helper)
+        .args(args)
+        .env("RUST_LOG", "warn")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .context("cannot start the benchmark helper")?;
+    let mut stdout = child.stdout.take().context("no output")?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+        out
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            anyhow::bail!("the benchmark did not finish");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let out = reader.join().unwrap_or_default();
+    anyhow::ensure!(status.success(), "the benchmark helper failed ({status})");
+    serde_json::from_str(out.trim()).context("unexpected benchmark output")
+}
+
 #[derive(uniffi::Object)]
 pub struct SecondScrnHost {
-    engine: HostEngine,
+    engine: Arc<HostEngine>,
     platform: Arc<WindowsHostPlatform>,
     logs: LogBuffer,
     data_dir: String,
+    extras: Arc<SharedExtras>,
+    /// The graphics preference this process was started with.
+    started_with: Option<u32>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     watcher: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl SecondScrnHost {
+    fn refresh_encoder_gpu(&self, choice: EncoderGpu) {
+        let view = encoder_gpu_view(&self.platform, choice, self.started_with);
+        self.extras.update(|x| x.encoder_gpu = view);
+    }
 }
 
 #[uniffi::export]
@@ -441,44 +690,71 @@ impl SecondScrnHost {
         let data_dir =
             if data_dir.trim().is_empty() { crate::default_data_dir() } else { std::path::PathBuf::from(data_dir) };
         std::fs::create_dir_all(&data_dir).map_err(fail)?;
-        let verbose =
-            secondscrn_session::settings::load::<HostSettings>(&data_dir.join("settings.json")).verbose_logging;
-        let logs = crate::logging::init(&data_dir.join("logs"), verbose);
+        let settings = secondscrn_session::settings::load::<HostSettings>(&data_dir.join("settings.json"));
+        let logs = crate::logging::init(&data_dir.join("logs"), settings.verbose_logging);
         tracing::info!(version = env!("CARGO_PKG_VERSION"), "SecondScrn host starting");
 
-        let platform = Arc::new(WindowsHostPlatform::new(DisplaySource::Virtual));
-        let engine = HostEngine::start(
-            HostConfig {
-                data_dir: data_dir.clone(),
-                default_host_name: crate::computer_name(),
-                listen_addr: [0, 0, 0, 0].into(),
-                interfaces: InterfacePolicy::default(),
-                enable_mdns: true,
-                protector: Arc::new(crate::dpapi::Dpapi),
-                logs: Some(logs.clone()),
-                app_version: env!("CARGO_PKG_VERSION").into(),
-            },
-            platform.clone(),
-        )
-        .map_err(fail)?;
+        let started_with = current_exe().and_then(|e| crate::gpu::preference(&e));
+        // Keep the preference in line with the setting (e.g. after it was
+        // reset in Windows); a change applies from the next start.
+        apply_gpu_preference(settings.encoder_gpu);
+        let platform = Arc::new(WindowsHostPlatform::new(DisplaySource::Virtual, settings.encoder_gpu));
+        let engine = Arc::new(
+            HostEngine::start(
+                HostConfig {
+                    data_dir: data_dir.clone(),
+                    default_host_name: crate::computer_name(),
+                    listen_addr: [0, 0, 0, 0].into(),
+                    interfaces: InterfacePolicy::default(),
+                    enable_mdns: true,
+                    protector: Arc::new(crate::dpapi::Dpapi),
+                    logs: Some(logs.clone()),
+                    app_version: env!("CARGO_PKG_VERSION").into(),
+                },
+                platform.clone(),
+            )
+            .map_err(fail)?,
+        );
+        let extras = Arc::new(SharedExtras {
+            extras: Mutex::new(Extras {
+                encoder_gpu: encoder_gpu_view(&platform, settings.encoder_gpu, started_with),
+                benchmark: BenchmarkView {
+                    running: false,
+                    width: 0,
+                    height: 0,
+                    fps: 0,
+                    results: Vec::new(),
+                    error: None,
+                },
+            }),
+            generation: Default::default(),
+        });
 
         let dir_string = data_dir.display().to_string();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (mut rx, stop2, dir2) = (engine.subscribe(), stop.clone(), dir_string.clone());
+        let (mut rx, stop2, dir2, extras2) = (engine.subscribe(), stop.clone(), dir_string.clone(), extras.clone());
         let watcher = std::thread::Builder::new()
             .name("secondscrn-ui-state".into())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("runtime");
                 rt.block_on(async move {
-                    listener.on_state_changed(to_view(&rx.borrow(), &dir2));
+                    let generation = || extras2.generation.load(std::sync::atomic::Ordering::Relaxed);
+                    let mut seen = generation();
+                    listener.on_state_changed(to_view(&rx.borrow(), &dir2, &extras2.get()));
                     while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
                         match tokio::time::timeout(Duration::from_millis(500), rx.changed()).await {
                             Ok(Ok(())) => {
-                                let s = to_view(&rx.borrow_and_update(), &dir2);
+                                seen = generation();
+                                let s = to_view(&rx.borrow_and_update(), &dir2, &extras2.get());
                                 listener.on_state_changed(s);
                                 tokio::time::sleep(Duration::from_millis(250)).await;
                             }
                             Ok(Err(_)) => return,
+                            // Changes outside the engine (GPU, benchmark).
+                            Err(_) if generation() != seen => {
+                                seen = generation();
+                                listener.on_state_changed(to_view(&rx.borrow(), &dir2, &extras2.get()));
+                            }
                             Err(_) => {}
                         }
                     }
@@ -490,13 +766,41 @@ impl SecondScrnHost {
             platform,
             logs,
             data_dir: dir_string,
+            extras,
+            started_with,
             stop,
             watcher: Mutex::new(Some(watcher)),
         }))
     }
 
     pub fn state(&self) -> HostState {
-        to_view(&self.engine.snapshot(), &self.data_dir)
+        to_view(&self.engine.snapshot(), &self.data_dir, &self.extras.get())
+    }
+
+    /// Measures every GPU's encoder at this size and frame rate (a few
+    /// seconds; results arrive through the state listener).
+    pub fn run_benchmark(&self, width: u32, height: u32, fps: u32) {
+        let mut already = false;
+        self.extras.update(|x| {
+            already = x.benchmark.running;
+            if !already {
+                x.benchmark = BenchmarkView { running: true, width, height, fps, results: Vec::new(), error: None };
+            }
+        });
+        if already {
+            return;
+        }
+        let extras = self.extras.clone();
+        std::thread::spawn(move || {
+            let r = run_benchmark_helper(width, height, fps);
+            extras.update(|x| {
+                x.benchmark.running = false;
+                match r {
+                    Ok(results) => x.benchmark.results = results.into_iter().map(bench_view).collect(),
+                    Err(e) => x.benchmark.error = Some(format!("{e:#}")),
+                }
+            });
+        });
     }
 
     pub fn submit_pairing_code(&self, id: u64, code: String) -> Result<(), HostError> {
@@ -548,14 +852,34 @@ impl SecondScrnHost {
 
     pub fn update_settings(&self, settings: SettingsView) {
         let base = self.engine.snapshot().settings;
+        let (old_gpu, new_gpu) = (base.encoder_gpu, gpu_to(settings.encoder_gpu));
         self.engine.update_settings(settings_to(settings, base));
+        if old_gpu != new_gpu {
+            apply_gpu_preference(new_gpu);
+            self.refresh_encoder_gpu(new_gpu);
+            // Takes effect right away when this process can already use that
+            // GPU's encoder; otherwise the view asks for a restart.
+            let (platform, engine, extras) = (self.platform.clone(), self.engine.clone(), self.extras.clone());
+            let started_with = self.started_with;
+            std::thread::spawn(move || {
+                platform.set_encoder_gpu(new_gpu);
+                engine.refresh_platform();
+                let view = encoder_gpu_view(&platform, new_gpu, started_with);
+                extras.update(|x| x.encoder_gpu = view);
+            });
+        }
     }
 
     /// Re-detects the driver and encoders (e.g. after installing the driver).
     pub fn refresh(&self) {
-        let p = self.platform.clone();
-        std::thread::spawn(move || p.reprobe());
-        self.engine.refresh_platform();
+        let (platform, engine, extras) = (self.platform.clone(), self.engine.clone(), self.extras.clone());
+        let started_with = self.started_with;
+        std::thread::spawn(move || {
+            platform.reprobe();
+            engine.refresh_platform();
+            let view = encoder_gpu_view(&platform, engine.snapshot().settings.encoder_gpu, started_with);
+            extras.update(|x| x.encoder_gpu = view);
+        });
     }
 
     pub fn export_diagnostics(&self) -> String {

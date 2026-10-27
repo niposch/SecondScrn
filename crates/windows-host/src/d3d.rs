@@ -30,6 +30,15 @@ pub struct AdapterInfo {
     pub device_id: u32,
 }
 
+impl AdapterInfo {
+    /// Integrated GPUs share system memory and report only a small carve-out
+    /// (Intel: 128 MB) as dedicated; graphics cards report their VRAM.
+    pub fn kind(&self) -> secondscrn_session::settings::EncoderGpu {
+        use secondscrn_session::settings::EncoderGpu;
+        if self.dedicated_video_memory <= 512 << 20 { EncoderGpu::Integrated } else { EncoderGpu::Dedicated }
+    }
+}
+
 pub fn luid_to_u64(l: LUID) -> u64 {
     ((l.HighPart as u32 as u64) << 32) | l.LowPart as u64
 }

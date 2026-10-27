@@ -22,6 +22,8 @@ use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Variant::{VARIANT, VT_BOOL, VT_UI4};
 use windows::core::{GUID, Interface, PWSTR};
 
+use secondscrn_session::settings::EncoderGpu;
+
 use crate::d3d::{self, Gpu};
 
 pub fn startup() {
@@ -68,8 +70,24 @@ pub struct EncoderDescriptor {
     pub codec: Codec,
     pub name: String,
     pub luid: Option<LUID>,
+    /// The GPU it runs on.
+    pub gpu: String,
+    pub kind: EncoderGpu,
     activate: IMFActivate,
 }
+
+/// `Encoder::new` failed to create the transform at all (as opposed to
+/// rejecting a size or format). The descriptor is unusable afterwards.
+#[derive(Debug)]
+struct ActivationFailed(windows::core::Error);
+
+impl std::fmt::Display for ActivationFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the encoder cannot be started: {}", self.0)
+    }
+}
+
+impl std::error::Error for ActivationFailed {}
 
 unsafe impl Send for EncoderDescriptor {}
 unsafe impl Sync for EncoderDescriptor {}
@@ -80,10 +98,10 @@ impl std::fmt::Debug for EncoderDescriptor {
     }
 }
 
-/// Lists hardware encoders for `codec`, best candidates first: encoders on
-/// discrete GPUs (most dedicated memory) before integrated ones, then Media
-/// Foundation's merit order. Each encoder is bound to its GPU by PCI vendor
-/// ID; `MFTEnum2`'s adapter filter does not filter in practice.
+/// Lists hardware encoders for `codec`: encoders on dedicated GPUs (most
+/// dedicated memory) before integrated ones, then Media Foundation's merit
+/// order. Each encoder is bound to its GPU by PCI vendor ID; `MFTEnum2`'s
+/// adapter filter does not filter in practice.
 pub fn enumerate(codec: Codec) -> Vec<EncoderDescriptor> {
     startup();
     let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
@@ -126,7 +144,14 @@ pub fn enumerate(codec: Codec) -> Vec<EncoderDescriptor> {
         };
         list.push((
             (std::cmp::Reverse(adapter.dedicated_video_memory), i),
-            EncoderDescriptor { codec, name, luid: Some(adapter.luid), activate },
+            EncoderDescriptor {
+                codec,
+                name,
+                luid: Some(adapter.luid),
+                gpu: adapter.name.clone(),
+                kind: adapter.kind(),
+                activate,
+            },
         ));
     }
     list.sort_by_key(|(k, _)| *k);
@@ -175,8 +200,9 @@ pub struct Encoder {
     codec_api: ICodecAPI,
     pub settings: EncoderSettings,
     pub name: String,
-    provides_samples: bool,
-    output_buffer_size: u32,
+    /// Reused output sample for encoders that don't provide their own (the
+    /// data is copied out before the next frame).
+    output_sample: Option<(IMFSample, IMFMediaBuffer)>,
     headers: Vec<u8>,
     event_thread: Option<std::thread::JoinHandle<()>>,
     _device_manager: IMFDXGIDeviceManager,
@@ -197,7 +223,8 @@ impl Encoder {
         on_event: impl Fn(EncoderEvent) -> bool + Send + 'static,
     ) -> Result<Self> {
         startup();
-        let transform: IMFTransform = unsafe { desc.activate.ActivateObject() }.context("activate encoder")?;
+        let transform: IMFTransform =
+            unsafe { desc.activate.ActivateObject() }.map_err(|e| anyhow::Error::new(ActivationFailed(e)))?;
         let attrs = unsafe { transform.GetAttributes() }?;
         unsafe {
             attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1).context("async unlock")?;
@@ -275,6 +302,16 @@ impl Encoder {
 
         let info = unsafe { transform.GetOutputStreamInfo(0) }?;
         let provides_samples = info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0;
+        let output_sample = if provides_samples {
+            None
+        } else {
+            unsafe {
+                let s = MFCreateSample()?;
+                let b = MFCreateMemoryBuffer(info.cbSize.max(1 << 20))?;
+                s.AddBuffer(&b)?;
+                Some((s, b))
+            }
+        };
         let headers = unsafe { sequence_header(&transform) };
 
         unsafe {
@@ -329,8 +366,7 @@ impl Encoder {
             codec_api,
             name: desc.name.clone(),
             settings,
-            provides_samples,
-            output_buffer_size: info.cbSize.max(1 << 20),
+            output_sample,
             headers,
             event_thread: Some(event_thread),
             _device_manager: manager,
@@ -366,15 +402,15 @@ impl Encoder {
 
     /// Collects one output after a `HaveOutput` event.
     pub fn collect(&mut self) -> Result<Option<EncodedOutput>> {
-        let provided = if self.provides_samples {
-            None
-        } else {
-            unsafe {
-                let s = MFCreateSample()?;
-                let b = MFCreateMemoryBuffer(self.output_buffer_size)?;
-                s.AddBuffer(&b)?;
-                Some(s)
-            }
+        let provided = match &self.output_sample {
+            None => None,
+            Some((s, b)) => unsafe {
+                // Attributes of the previous frame (clean point, times) must
+                // not leak into this one.
+                s.DeleteAllItems()?;
+                b.SetCurrentLength(0)?;
+                Some(s.clone())
+            },
         };
         let mut buffers = [MFT_OUTPUT_DATA_BUFFER {
             dwStreamID: 0,
@@ -448,53 +484,119 @@ impl Drop for Encoder {
 /// Resolutions tried when probing an encoder's maximum size.
 const PROBE_SIZES: [(u32, u32); 3] = [(3840, 2160), (2560, 1600), (1920, 1080)];
 
-/// Verifies which codecs work by actually configuring the best encoder per
-/// codec. Advertised-but-broken encoders are excluded.
-pub fn probe() -> Vec<(CodecCapability, EncoderDescriptor)> {
-    let mut out = Vec::new();
+/// What one GPU can encode in this process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuEncoders {
+    pub name: String,
+    pub kind: EncoderGpu,
+    pub luid: u64,
+    /// Codecs with a working encoder on this GPU.
+    pub codecs: Vec<Codec>,
+    /// Why none works, when none does.
+    pub problem: Option<String>,
+}
+
+/// The verified encoders of every GPU, and the one used per codec.
+#[derive(Default)]
+pub struct Inventory {
+    /// One encoder per codec, on the preferred GPU when it can.
+    pub selected: Vec<(CodecCapability, EncoderDescriptor)>,
+    pub gpus: Vec<GpuEncoders>,
+}
+
+/// Configures `desc` at the largest size it accepts.
+fn try_encoder(desc: &EncoderDescriptor) -> Result<CodecCapability> {
+    let gpu = d3d::create(desc.luid)?;
+    let mut last = None;
+    for (w, h) in PROBE_SIZES {
+        let settings = EncoderSettings {
+            codec: desc.codec,
+            width: w,
+            height: h,
+            fps: 60,
+            bitrate_bps: 20_000_000,
+            color: ColorInfo::SDR_BT709_LIMITED,
+        };
+        match Encoder::new(&gpu, desc, settings, |_| true) {
+            Ok(enc) => {
+                drop(enc);
+                return Ok(CodecCapability {
+                    codec: desc.codec,
+                    implementation: desc.name.clone(),
+                    hardware: true,
+                    max_width: w,
+                    max_height: h,
+                    // Media Foundation offers no frame-rate limit query; the
+                    // session never asks for more than the tablet's refresh rate.
+                    max_fps: 240,
+                });
+            }
+            Err(e) => {
+                tracing::debug!(encoder = %desc.name, w, h, error = format!("{e:#}"), "probe failed");
+                // A transform that could not be created will not be created
+                // at a smaller size either: its activation object is broken.
+                if e.is::<ActivationFailed>() {
+                    return Err(e);
+                }
+                last = Some(e);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow!("no size accepted")))
+}
+
+/// Verifies which codecs work on which GPU by actually configuring each
+/// GPU's encoders; advertised-but-broken encoders are excluded. Per codec the
+/// encoder on a `prefer` GPU is selected, any other working one otherwise.
+pub fn probe(prefer: EncoderGpu) -> Inventory {
+    let mut inv = Inventory::default();
+    let mut working: Vec<(CodecCapability, EncoderDescriptor)> = Vec::new();
     for codec in Codec::ALL {
-        'enc: for desc in enumerate(codec) {
-            let gpu = match d3d::create(desc.luid) {
-                Ok(g) => g,
-                Err(e) => {
-                    tracing::debug!(encoder = %desc.name, error = %e, "no device for encoder adapter");
-                    continue;
+        for desc in enumerate(codec) {
+            let luid = desc.luid.map(d3d::luid_to_u64).unwrap_or(0);
+            let idx = match inv.gpus.iter().position(|g| g.luid == luid) {
+                Some(i) => i,
+                None => {
+                    inv.gpus.push(GpuEncoders {
+                        name: desc.gpu.clone(),
+                        kind: desc.kind,
+                        luid,
+                        codecs: Vec::new(),
+                        problem: None,
+                    });
+                    inv.gpus.len() - 1
                 }
             };
-            for (w, h) in PROBE_SIZES {
-                let settings = EncoderSettings {
-                    codec,
-                    width: w,
-                    height: h,
-                    fps: 60,
-                    bitrate_bps: 20_000_000,
-                    color: ColorInfo::SDR_BT709_LIMITED,
-                };
-                match Encoder::new(&gpu, &desc, settings, |_| true) {
-                    Ok(enc) => {
-                        drop(enc);
-                        out.push((
-                            CodecCapability {
-                                codec,
-                                implementation: desc.name.clone(),
-                                hardware: true,
-                                max_width: w,
-                                max_height: h,
-                                // Media Foundation offers no frame-rate limit
-                                // query; the session never asks for more than
-                                // the tablet's refresh rate.
-                                max_fps: 240,
-                            },
-                            desc.clone(),
-                        ));
-                        break 'enc;
-                    }
-                    Err(e) => tracing::debug!(encoder = %desc.name, w, h, error = %e, "probe failed"),
+            if inv.gpus[idx].codecs.contains(&codec) {
+                continue; // this GPU already has a working encoder for it
+            }
+            match try_encoder(&desc) {
+                Ok(cap) => {
+                    inv.gpus[idx].codecs.push(codec);
+                    working.push((cap, desc));
+                }
+                Err(e) => {
+                    inv.gpus[idx].problem.get_or_insert_with(|| format!("{}: {e:#}", desc.name));
                 }
             }
         }
     }
-    out
+    for g in &mut inv.gpus {
+        if !g.codecs.is_empty() {
+            g.problem = None;
+        }
+    }
+    for codec in Codec::ALL {
+        let mut candidates = working.iter().filter(|(c, _)| c.codec == codec);
+        let preferred = candidates.clone().find(|(_, d)| d.kind == prefer);
+        if let Some(choice) = preferred.or_else(|| candidates.next()) {
+            inv.selected.push(choice.clone());
+        }
+    }
+    for (cap, desc) in &inv.selected {
+        tracing::info!(codec = %cap.codec, encoder = %desc.name, gpu = %desc.gpu, "encoder selected");
+    }
+    inv
 }
 
 pub fn ensure_supported(caps: &[(CodecCapability, EncoderDescriptor)], codec: Codec) -> Result<&EncoderDescriptor> {
