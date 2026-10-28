@@ -42,6 +42,21 @@ unsigned (SmartScreen warns). With a certificate, pass `-SignParams`
 app binaries, `Update.exe` and `Setup.exe`. Azure Trusted Signing is supported
 by `vpk` as well (`--azureTrustedSignFile`).
 
+## Linux
+
+On Ubuntu 24.04 (or WSL with it; the oldest supported base):
+
+```bash
+packaging/linux/build-release.sh     # -> releases/linux/
+```
+
+Output: `secondscrn_<v>_amd64.deb` (depends on GTK 4.14, libadwaita 1.5,
+GStreamer base/good/bad and the PipeWire plugin; installs the uinput udev
+rule), `SecondScrn-<v>-linux-x86_64.tar.gz` (same files with `install.sh`)
+and `SHA256SUMS-linux-<v>.txt`. Publish them with the other release assets.
+The app only notifies about new releases (GitHub API via `curl`) and links
+the exact version; it never installs updates.
+
 ## Android
 
 ```powershell

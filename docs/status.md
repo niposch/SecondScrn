@@ -21,6 +21,19 @@ Version 0.0.2 (in preparation). See the [release notes](release-notes-0.0.2.md).
 * **App rework:** per-tablet presets, one frame-rate limit, Home / Tablets /
   Settings / Diagnostics pages, frame rates updated every 250 ms, fixed-width
   statistics.
+* **Linux app (new):** GNOME and KDE Plasma on Wayland through the desktop
+  portal's virtual monitor; GStreamer encoding (VA-API, NVENC, software
+  fallback); pointer, touch and pen (virtual tablet) input; GTK 4 /
+  libadwaita app with the Windows app's pages and options, tray quick
+  controls, autostart and update notices; .deb and tar.gz packages.
+  Verified in WSL (Ubuntu 24.04, no desktop): build, clippy, unit tests, an
+  end-to-end test-pattern stream through the real host engine decoded by
+  ffmpeg without errors (`linux-host/tests/test_pattern.rs`), pairing,
+  streaming and reconnection of the dev client against the CLI host and the
+  app, and the app's pages (Broadway backend). **Not yet verified on a real
+  desktop:** the portal virtual monitor (size negotiation on KDE and GNOME),
+  hardware encoders on real GPUs, portal input coordinates, the uinput pen
+  and its KWin mapping, the tray, autostart and the packages' installation.
 
 ## Release validation (2026-10-25)
 
@@ -201,6 +214,9 @@ this tablet sustains at native resolution; 120+ needs a lower resolution.
 
 ## Not yet verified (hardware-dependent claims)
 
+* Linux on a real desktop (see the 0.0.2 section above): first verification
+  on KDE Plasma 6 / Wayland pending; GNOME after that.
+
 * End-to-end latency, smoothness at 60 fps, battery, thermals, colour accuracy
   on the tablet panel, sleep/resume — see the procedure in
   [testing.md](testing.md#physical-tablet-validation).
@@ -236,6 +252,11 @@ this tablet sustains at native resolution; 120+ needs a lower resolution.
   desktop and can't receive windows.
 * Windows builds are not code-signed (SmartScreen may warn). Android releases
   use a dedicated signing key; development APKs use a different key.
+* Linux: Wayland GNOME / KDE Plasma only (no X11, no wlroots desktops such as
+  Sway or Hyprland, whose portals have no virtual monitors). Captured frames
+  go through system memory (no DMA-BUF zero copy yet), which costs CPU at
+  high resolutions and frame rates. No long-term reference recovery (keyframes
+  after loss). Updates are not installed by the app.
 
 ## Roadmap
 

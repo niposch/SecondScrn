@@ -13,13 +13,19 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | android_log-sys | 0.3.2 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-mobile/android_log-sys-rs) |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-cli/anstyle.git) |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/anyhow) |
+| arc-swap | 1.9.3 | MIT OR Apache-2.0 | [upstream](https://github.com/vorner/arc-swap) |
 | arrayvec | 0.7.8 | MIT OR Apache-2.0 | [upstream](https://github.com/bluss/arrayvec) |
+| ashpd | 0.13.13 | MIT | [upstream](https://github.com/bilelmoussaoui/ashpd) |
 | askama | 0.14.0 | MIT OR Apache-2.0 | [upstream](https://github.com/askama-rs/askama) |
 | askama_derive | 0.14.0 | MIT OR Apache-2.0 | [upstream](https://github.com/askama-rs/askama) |
 | askama_parser | 0.14.0 | MIT OR Apache-2.0 | [upstream](https://github.com/askama-rs/askama) |
 | asn1-rs | 0.7.2 | MIT OR Apache-2.0 | [upstream](https://github.com/rusticata/asn1-rs.git) |
 | asn1-rs-derive | 0.6.0 | MIT OR Apache-2.0 | [upstream](https://github.com/rusticata/asn1-rs.git) |
 | asn1-rs-impl | 0.2.0 | MIT/Apache-2.0 | [upstream](https://github.com/rusticata/asn1-rs.git) |
+| async-broadcast | 0.7.2 | MIT OR Apache-2.0 | [upstream](https://github.com/smol-rs/async-broadcast) |
+| async-recursion | 1.2.0 | MIT OR Apache-2.0 | [upstream](https://github.com/dcchut/async-recursion) |
+| async-trait | 0.1.92 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/async-trait) |
+| atomic_refcell | 0.1.14 | Apache-2.0 OR MIT | [upstream](https://github.com/mozilla/atomic_refcell) |
 | autocfg | 1.5.1 | Apache-2.0 OR MIT | [upstream](https://github.com/cuviper/autocfg) |
 | aws-lc-rs | 1.18.2 | ISC AND (Apache-2.0 OR ISC) | [upstream](https://github.com/aws/aws-lc-rs) |
 | aws-lc-sys | 0.46.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | [upstream](https://github.com/aws/aws-lc-rs) |
@@ -30,16 +36,21 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | basic-toml | 0.1.10 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/basic-toml) |
 | bit-vec | 0.9.1 | Apache-2.0 OR MIT | [upstream](https://github.com/contain-rs/bit-vec) |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 | [upstream](https://github.com/bitflags/bitflags) |
+| bitvec | 1.1.1 | MIT | [upstream](https://github.com/bitvecto-rs/bitvec) |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 | [upstream](https://github.com/RustCrypto/utils) |
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 | [upstream](https://github.com/fitzgen/bumpalo) |
 | bytes | 1.12.1 | MIT | [upstream](https://github.com/tokio-rs/bytes) |
+| cairo-rs | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| cairo-sys-rs | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
 | camino | 1.2.6 | MIT OR Apache-2.0 | [upstream](https://github.com/camino-rs/camino) |
 | cargo-platform | 0.1.9 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/cargo) |
 | cargo_metadata | 0.19.2 | MIT | [upstream](https://github.com/oli-obk/cargo_metadata) |
 | cc | 1.10.0 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/cc-rs) |
 | ccm | 0.5.0 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/AEADs/tree/master/ccm) |
 | cesu8 | 1.1.0 | Apache-2.0/MIT | [upstream](https://github.com/emk/cesu8-rs) |
+| cfg-expr | 0.20.10 | MIT OR Apache-2.0 | [upstream](https://github.com/EmbarkStudios/cfg-expr) |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/cfg-if) |
+| cfg_aliases | 0.2.2 | MIT | [upstream](https://github.com/katharostech/cfg_aliases) |
 | chacha20 | 0.9.1 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/stream-ciphers) |
 | chacha20poly1305 | 0.10.1 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/AEADs/tree/master/chacha20poly1305) |
 | cipher | 0.4.4 | MIT OR Apache-2.0 | [upstream](https://github.com/RustCrypto/traits) |
@@ -54,6 +65,7 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | crc | 3.4.0 | MIT OR Apache-2.0 | [upstream](https://github.com/mrhooray/crc-rs.git) |
 | crc-catalog | 2.5.0 | MIT OR Apache-2.0 | [upstream](https://github.com/akhilles/crc-catalog.git) |
 | crossbeam-channel | 0.5.17 | MIT OR Apache-2.0 | [upstream](https://github.com/crossbeam-rs/crossbeam) |
+| crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 | [upstream](https://github.com/crossbeam-rs/crossbeam) |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 | [upstream](https://github.com/crossbeam-rs/crossbeam) |
 | crypto-bigint | 0.5.5 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/crypto-bigint) |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 | [upstream](https://github.com/RustCrypto/traits) |
@@ -70,30 +82,69 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 | [upstream](https://github.com/yaahc/displaydoc) |
 | dunce | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 | [upstream](https://gitlab.com/kornelski/dunce) |
 | ecdsa | 0.16.9 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/signatures/tree/master/ecdsa) |
+| either | 1.19.0 | MIT OR Apache-2.0 | [upstream](https://github.com/rayon-rs/either) |
 | elliptic-curve | 0.13.8 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/traits/tree/master/elliptic-curve) |
+| endi | 1.1.1 | MIT | [upstream](https://github.com/zeenix/endi) |
+| enumflags2 | 0.7.12 | MIT OR Apache-2.0 | [upstream](https://github.com/meithecatte/enumflags2) |
+| enumflags2_derive | 0.7.12 | MIT OR Apache-2.0 | [upstream](https://github.com/meithecatte/enumflags2) |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT | [upstream](https://github.com/indexmap-rs/equivalent) |
 | errno | 0.3.14 | MIT OR Apache-2.0 | [upstream](https://github.com/lambda-fairy/rust-errno) |
+| evdev | 0.13.2 | Apache-2.0 OR MIT | [upstream](https://github.com/cmr/evdev) |
+| event-listener | 5.4.2 | Apache-2.0 OR MIT | [upstream](https://github.com/smol-rs/event-listener) |
+| event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT | [upstream](https://github.com/smol-rs/event-listener-strategy) |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT | [upstream](https://github.com/smol-rs/fastrand) |
 | ff | 0.13.1 | MIT/Apache-2.0 | [upstream](https://github.com/zkcrypto/ff) |
 | fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause | [upstream](https://github.com/mit-plv/fiat-crypto) |
+| field-offset | 0.3.6 | MIT OR Apache-2.0 | [upstream](https://github.com/Diggsey/rust-field-offset) |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/cc-rs) |
 | flagset | 0.4.7 | Apache-2.0 | [upstream](https://github.com/enarx/flagset) |
 | flume | 0.12.0 | Apache-2.0/MIT | [upstream](https://github.com/zesterer/flume) |
 | fs-err | 2.11.0 | MIT/Apache-2.0 | [upstream](https://github.com/andrewhickman/fs-err) |
 | fs_extra | 1.3.0 | MIT | [upstream](https://github.com/webdesus/fs_extra) |
+| funty | 2.0.0 | MIT | [upstream](https://github.com/myrrlyn/funty) |
+| futures-channel | 0.3.34 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/futures-rs) |
 | futures-core | 0.3.34 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/futures-rs) |
+| futures-executor | 0.3.34 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/futures-rs) |
+| futures-io | 0.3.34 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/futures-rs) |
+| futures-lite | 2.6.1 | Apache-2.0 OR MIT | [upstream](https://github.com/smol-rs/futures-lite) |
+| futures-macro | 0.3.34 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/futures-rs) |
 | futures-sink | 0.3.34 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/futures-rs) |
 | futures-task | 0.3.34 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/futures-rs) |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/futures-rs) |
+| gdk-pixbuf | 0.22.0 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| gdk-pixbuf-sys | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| gdk4 | 0.11.5 | MIT | [upstream](https://github.com/gtk-rs/gtk4-rs) |
+| gdk4-sys | 0.11.5 | MIT | [upstream](https://github.com/gtk-rs/gtk4-rs) |
 | generic-array | 0.14.7 | MIT | [upstream](https://github.com/fizyk20/generic-array.git) |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-random/getrandom) |
 | getrandom | 0.3.4 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-random/getrandom) |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-random/getrandom) |
 | ghash | 0.5.1 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/universal-hashes) |
+| gio | 0.22.10 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| gio-sys | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| glib | 0.22.10 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| glib-macros | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| glib-sys | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
 | glob | 0.3.4 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/glob) |
 | glow | 0.16.0 | MIT OR Apache-2.0 OR Zlib | [upstream](https://github.com/grovesNL/glow) |
+| gobject-sys | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
 | goblin | 0.8.2 | MIT | [upstream](https://github.com/m4b/goblin) |
+| graphene-rs | 0.22.8 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| graphene-sys | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
 | group | 0.13.0 | MIT/Apache-2.0 | [upstream](https://github.com/zkcrypto/group) |
+| gsk4 | 0.11.5 | MIT | [upstream](https://github.com/gtk-rs/gtk4-rs) |
+| gsk4-sys | 0.11.5 | MIT | [upstream](https://github.com/gtk-rs/gtk4-rs) |
+| gstreamer | 0.25.4 | MIT OR Apache-2.0 | [upstream](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) |
+| gstreamer-app | 0.25.2 | MIT OR Apache-2.0 | [upstream](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) |
+| gstreamer-app-sys | 0.25.4 | MIT | [upstream](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) |
+| gstreamer-base | 0.25.4 | MIT OR Apache-2.0 | [upstream](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) |
+| gstreamer-base-sys | 0.25.4 | MIT | [upstream](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) |
+| gstreamer-sys | 0.25.4 | MIT | [upstream](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) |
+| gstreamer-video | 0.25.4 | MIT OR Apache-2.0 | [upstream](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) |
+| gstreamer-video-sys | 0.25.4 | MIT | [upstream](https://gitlab.freedesktop.org/gstreamer/gstreamer-rs) |
+| gtk4 | 0.11.5 | MIT | [upstream](https://github.com/gtk-rs/gtk4-rs) |
+| gtk4-macros | 0.11.5 | MIT | [upstream](https://github.com/gtk-rs/gtk4-rs) |
+| gtk4-sys | 0.11.5 | MIT | [upstream](https://github.com/gtk-rs/gtk4-rs) |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/hashbrown) |
 | heck | 0.5.0 | MIT OR Apache-2.0 | [upstream](https://github.com/withoutboats/heck) |
 | hex | 0.4.3 | MIT OR Apache-2.0 | [upstream](https://github.com/KokaKiwi/rust-hex) |
@@ -103,6 +154,7 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | indexmap | 2.14.2 | Apache-2.0 OR MIT | [upstream](https://github.com/indexmap-rs/indexmap) |
 | inout | 0.1.4 | MIT OR Apache-2.0 | [upstream](https://github.com/RustCrypto/utils) |
 | is | 0.11.1 | MIT OR Apache-2.0 | [upstream](https://github.com/algesten/str0m) |
+| itertools | 0.15.0 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-itertools/itertools) |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/itoa) |
 | jni | 0.21.1 | MIT/Apache-2.0 | [upstream](https://github.com/jni-rs/jni-rs) |
 | jni-sys | 0.3.1 | MIT OR Apache-2.0 | [upstream](https://github.com/jni-rs/jni-sys) |
@@ -111,7 +163,11 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | jobserver | 0.1.35 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/jobserver-rs) |
 | js-sys | 0.3.106 | MIT OR Apache-2.0 | [upstream](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys) |
 | khronos-egl | 6.0.0 | MIT/Apache-2.0 | [upstream](https://github.com/timothee-haudebourg/khronos-egl) |
+| ksni | 0.3.7 | Unlicense | [upstream](https://github.com/iovxw/ksni) |
+| kstring | 2.0.2 | MIT OR Apache-2.0 | [upstream](https://github.com/cobalt-org/kstring) |
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang-nursery/lazy-static.rs) |
+| libadwaita | 0.9.2 | MIT | [upstream](https://gitlab.gnome.org/World/Rust/libadwaita-rs) |
+| libadwaita-sys | 0.9.2 | MIT | [upstream](https://gitlab.gnome.org/World/Rust/libadwaita-rs) |
 | libc | 0.2.191 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-lang/libc) |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [upstream](https://github.com/sunfishcode/linux-raw-sys) |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 | [upstream](https://github.com/Amanieu/parking_lot) |
@@ -119,24 +175,34 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | matchers | 0.2.0 | MIT | [upstream](https://github.com/hawkw/matchers) |
 | mdns-sd | 0.21.6 | Apache-2.0 OR MIT | [upstream](https://github.com/keepsimple1/mdns-sd) |
 | memchr | 2.8.3 | Unlicense OR MIT | [upstream](https://github.com/BurntSushi/memchr) |
+| memoffset | 0.9.1 | MIT | [upstream](https://github.com/Gilnaa/memoffset) |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 | [upstream](https://github.com/Alexhuszagh/minimal-lexical) |
 | mio | 1.2.4 | MIT | [upstream](https://github.com/tokio-rs/mio) |
+| muldiv | 1.0.1 | MIT | [upstream](https://github.com/sdroege/rust-muldiv) |
 | ndk | 0.9.0 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-mobile/ndk) |
 | ndk-sys | 0.6.0+11769913 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-mobile/ndk) |
+| nix | 0.29.0 | MIT | [upstream](https://github.com/nix-rust/nix) |
 | nom | 7.1.3 | MIT | [upstream](https://github.com/Geal/nom) |
 | nom | 8.0.0 | MIT | [upstream](https://github.com/rust-bakery/nom) |
 | nu-ansi-term | 0.50.3 | MIT | [upstream](https://github.com/nushell/nu-ansi-term) |
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-num/num-bigint) |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 | [upstream](https://github.com/jhpratt/num-conv) |
 | num-integer | 0.1.47 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-num/num-integer) |
+| num-rational | 0.4.2 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-num/num-rational) |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-num/num-traits) |
 | num_enum | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | [upstream](https://github.com/illicitonion/num_enum) |
 | num_enum_derive | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | [upstream](https://github.com/illicitonion/num_enum) |
 | oid-registry | 0.8.1 | MIT OR Apache-2.0 | [upstream](https://github.com/rusticata/oid-registry.git) |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | [upstream](https://github.com/matklad/once_cell) |
 | opaque-debug | 0.3.1 | MIT OR Apache-2.0 | [upstream](https://github.com/RustCrypto/utils) |
+| option-operations | 0.6.1 | MIT/Apache-2.0 | [upstream](https://github.com/fengalin/option-operations) |
+| ordered-stream | 0.2.0 | MIT OR Apache-2.0 | [upstream](https://github.com/danieldg/ordered-stream) |
 | p256 | 0.13.2 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/elliptic-curves/tree/master/p256) |
 | p384 | 0.13.1 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/elliptic-curves/tree/master/p384) |
+| pango | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| pango-sys | 0.22.9 | MIT | [upstream](https://github.com/gtk-rs/gtk-rs-core) |
+| parking | 2.2.1 | Apache-2.0 OR MIT | [upstream](https://github.com/smol-rs/parking) |
+| pastey | 0.2.3 | MIT OR Apache-2.0 | [upstream](https://github.com/as1100k/pastey) |
 | pem | 4.0.0 | MIT | [upstream](https://github.com/jcreekmore/pem-rs.git) |
 | pem-rfc7468 | 0.7.0 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/formats/tree/master/pem-rfc7468) |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | [upstream](https://github.com/servo/rust-url/) |
@@ -154,6 +220,7 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | quote | 1.0.47 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/quote) |
 | r-efi | 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | [upstream](https://github.com/r-efi/r-efi) |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | [upstream](https://github.com/r-efi/r-efi) |
+| radium | 0.7.0 | MIT | [upstream](https://github.com/bitvecto-rs/radium) |
 | rand | 0.8.8 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-random/rand) |
 | rand | 0.9.5 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-random/rand) |
 | rand_chacha | 0.3.1 | MIT OR Apache-2.0 | [upstream](https://github.com/rust-random/rand) |
@@ -186,11 +253,13 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | serde_core | 1.0.229 | MIT OR Apache-2.0 | [upstream](https://github.com/serde-rs/serde) |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 | [upstream](https://github.com/serde-rs/serde) |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 | [upstream](https://github.com/serde-rs/json) |
+| serde_repr | 0.1.21 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/serde-repr) |
 | serde_spanned | 1.1.2 | MIT OR Apache-2.0 | [upstream](https://github.com/toml-rs/toml) |
 | sha1 | 0.10.7 | MIT OR Apache-2.0 | [upstream](https://github.com/RustCrypto/hashes) |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | [upstream](https://github.com/RustCrypto/hashes) |
 | sharded-slab | 0.1.7 | MIT | [upstream](https://github.com/hawkw/sharded-slab) |
 | shlex | 2.0.1 | MIT OR Apache-2.0 | [upstream](https://github.com/comex/rust-shlex) |
+| signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 | [upstream](https://github.com/vorner/signal-hook) |
 | signature | 2.2.0 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/traits/tree/master/signature) |
 | siphasher | 1.0.4 | MIT OR Apache-2.0 | [upstream](https://github.com/jedisct1/rust-siphash) |
 | slab | 0.4.12 | MIT | [upstream](https://github.com/tokio-rs/slab) |
@@ -212,6 +281,10 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | syn | 2.0.119 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/syn) |
 | syn | 3.0.9 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/syn) |
 | synstructure | 0.13.2 | MIT | [upstream](https://github.com/mystor/synstructure) |
+| system-deps | 7.0.8 | MIT OR Apache-2.0 | [upstream](https://github.com/gdesmott/system-deps) |
+| system-deps | 9.0.1 | MIT OR Apache-2.0 | [upstream](https://github.com/gdesmott/system-deps) |
+| tap | 1.0.1 | MIT | [upstream](https://github.com/myrrlyn/tap) |
+| target-lexicon | 0.13.5 | Apache-2.0 WITH LLVM-exception | [upstream](https://github.com/bytecodealliance/target-lexicon) |
 | tempfile | 3.27.0 | MIT OR Apache-2.0 | [upstream](https://github.com/Stebalien/tempfile) |
 | textwrap | 0.16.4 | MIT | [upstream](https://github.com/mgeisler/textwrap) |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | [upstream](https://github.com/dtolnay/thiserror) |
@@ -226,6 +299,7 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | tokio-macros | 2.7.2 | MIT | [upstream](https://github.com/tokio-rs/tokio) |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 | [upstream](https://github.com/rustls/tokio-rustls) |
 | toml | 0.9.12+spec-1.1.0 | MIT OR Apache-2.0 | [upstream](https://github.com/toml-rs/toml) |
+| toml | 1.1.8+spec-1.1.0 | MIT OR Apache-2.0 | [upstream](https://github.com/toml-rs/toml) |
 | toml_datetime | 0.7.5+spec-1.1.0 | MIT OR Apache-2.0 | [upstream](https://github.com/toml-rs/toml) |
 | toml_datetime | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | [upstream](https://github.com/toml-rs/toml) |
 | toml_edit | 0.25.17+spec-1.1.0 | MIT OR Apache-2.0 | [upstream](https://github.com/toml-rs/toml) |
@@ -239,6 +313,7 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | tracing-serde | 0.2.0 | MIT | [upstream](https://github.com/tokio-rs/tracing) |
 | tracing-subscriber | 0.3.23 | MIT | [upstream](https://github.com/tokio-rs/tracing) |
 | typenum | 1.20.1 | MIT OR Apache-2.0 | [upstream](https://github.com/paholg/typenum) |
+| uds_windows | 1.2.1 | MIT | [upstream](https://github.com/haraldh/rust_uds_windows) |
 | unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 | [upstream](https://github.com/dtolnay/unicode-ident) |
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 | [upstream](https://github.com/unicode-rs/unicode-width) |
 | uniffi | 0.31.2 | MPL-2.0 | [upstream](https://github.com/mozilla/uniffi-rs) |
@@ -252,7 +327,9 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | universal-hash | 0.5.1 | MIT OR Apache-2.0 | [upstream](https://github.com/RustCrypto/traits) |
 | untrusted | 0.7.1 | ISC | [upstream](https://github.com/briansmith/untrusted) |
 | untrusted | 0.9.0 | ISC | [upstream](https://github.com/briansmith/untrusted) |
+| uuid | 1.29.0 | Apache-2.0 OR MIT | [upstream](https://github.com/uuid-rs/uuid) |
 | valuable | 0.1.1 | MIT | [upstream](https://github.com/tokio-rs/valuable) |
+| version-compare | 0.2.1 | MIT | [upstream](https://gitlab.com/timvisee/version-compare) |
 | version_check | 0.9.5 | MIT/Apache-2.0 | [upstream](https://github.com/SergioBenitez/version_check) |
 | walkdir | 2.5.0 | Unlicense/MIT | [upstream](https://github.com/BurntSushi/walkdir) |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [upstream](https://github.com/bytecodealliance/wasi) |
@@ -298,12 +375,20 @@ License expressions are upstream declarations. Full collected texts: [Rust notic
 | winnow | 0.7.15 | MIT | [upstream](https://github.com/winnow-rs/winnow) |
 | winnow | 1.0.4 | MIT | [upstream](https://github.com/winnow-rs/winnow) |
 | wit-bindgen | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [upstream](https://github.com/bytecodealliance/wit-bindgen) |
+| wyz | 0.5.1 | MIT | [upstream](https://github.com/myrrlyn/wyz) |
 | x25519-dalek | 2.0.1 | BSD-3-Clause | [upstream](https://github.com/dalek-cryptography/curve25519-dalek/tree/main/x25519-dalek) |
 | x509-cert | 0.2.5 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/formats/tree/master/x509-cert) |
 | x509-parser | 0.18.1 | MIT OR Apache-2.0 | [upstream](https://github.com/rusticata/x509-parser.git) |
 | yasna | 0.6.0 | MIT OR Apache-2.0 | [upstream](https://github.com/qnighy/yasna.rs) |
+| zbus | 5.19.0 | MIT | [upstream](https://github.com/z-galaxy/zbus/) |
+| zbus_macros | 5.19.0 | MIT | [upstream](https://github.com/z-galaxy/zbus/) |
+| zbus_names | 4.3.5 | MIT | [upstream](https://github.com/z-galaxy/zbus/) |
+| zcheapstr | 1.1.0 | MIT | [upstream](https://github.com/z-galaxy/zcheapstr/) |
 | zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | [upstream](https://github.com/google/zerocopy) |
 | zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | [upstream](https://github.com/google/zerocopy) |
 | zeroize | 1.9.1 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/utils) |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT | [upstream](https://github.com/RustCrypto/utils) |
 | zmij | 1.0.23 | MIT | [upstream](https://github.com/dtolnay/zmij) |
+| zvariant | 5.15.1 | MIT | [upstream](https://github.com/z-galaxy/zbus/) |
+| zvariant_derive | 5.15.1 | MIT | [upstream](https://github.com/z-galaxy/zbus/) |
+| zvariant_utils | 4.2.0 | MIT | [upstream](https://github.com/z-galaxy/zbus/) |

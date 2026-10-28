@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.secondscrn.SecondScrn</id>
+  <name>SecondScrn</name>
+  <summary>Use your Android tablet as a second screen</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      SecondScrn turns an Android tablet into an extra monitor over Wi-Fi, with
+      low latency, touch and pen input with pressure and tilt. On Linux it
+      needs GNOME or KDE Plasma on Wayland.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.secondscrn.SecondScrn.desktop</launchable>
+  <url type="homepage">https://github.com/niposch/SecondScrn</url>
+  <content_rating type="oars-1.1"/>
+</component>

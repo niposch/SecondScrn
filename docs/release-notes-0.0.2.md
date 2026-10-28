@@ -1,7 +1,8 @@
 # SecondScrn 0.0.2 (draft)
 
 Lower latency on busy or unreliable Wi-Fi, fewer freezes, a reorganised
-Windows app, and versions that are updated in lockstep.
+Windows app, **a first Linux app**, and versions that are updated in
+lockstep.
 
 **Update both apps.** Until 1.0 the PC and tablet apps only work together at
 the same version. Tablets still on 0.0.1 show "the host and tablet app
@@ -13,9 +14,20 @@ versions are incompatible" against a 0.0.2 PC: install the 0.0.2 APK. From
 * **SecondScrn-win-Setup.exe** — Windows 11 x64 installer.
 * **SecondScrn-win-Portable.zip** — portable Windows app.
 * **SecondScrn-0.0.2-android.apk** — signed Android 10+ APK (arm64-v8a and x86_64).
+* **secondscrn_0.0.2_amd64.deb** — Linux (Ubuntu 24.04+, Debian-based).
+* **SecondScrn-0.0.2-linux-x86_64.tar.gz** — Linux, other distributions
+  (`sudo ./install.sh`).
 * **SHA256SUMS.txt** — checksums for the binary assets.
 
 ## Changes
+
+* **Linux (new, early):** the tablet becomes a monitor on GNOME and KDE
+  Plasma 6 on Wayland through the desktop's screen sharing portal — no
+  driver, no root. Hardware encoding with VA-API (Intel, AMD) or NVENC
+  (NVIDIA) through GStreamer; touch, mouse and the pen with pressure and tilt
+  (a virtual tablet, mapped to the tablet's monitor on KDE Plasma). The app
+  has the same pages and options as the Windows app, tray quick controls
+  (preset, resolution, frame rate) and notifies about updates.
 
 * **Latency stays low when the network struggles.** The tablet reports when
   each frame arrived; the PC lowers the bitrate within about 100 ms of frames
@@ -43,6 +55,8 @@ versions are incompatible" against a 0.0.2 PC: install the 0.0.2 APK. From
 
 ## Tested and known limitations
 
-Tested on Windows 11 / NVIDIA RTX 4080 SUPER and Xiaomi Pad 7 Pro. Recovery
+Tested on Windows 11 / NVIDIA RTX 4080 SUPER and Xiaomi Pad 7 Pro. The Linux
+app was tested without a desktop (test pattern, CI-style); verification on
+KDE Plasma and GNOME desktops is pending. Recovery
 frames on the tablet's decoder over real Wi-Fi, hybrid-GPU laptops and AMD/Intel
 encoders still need validation. See [status](status.md).

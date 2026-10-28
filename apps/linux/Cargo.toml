@@ -1,0 +1,30 @@
+[package]
+name = "secondscrn-linux-app"
+description = "SecondScrn for Linux (GNOME, KDE Plasma): GTK 4 / libadwaita desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "secondscrn"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+secondscrn-linux-host = { path = "../../crates/linux-host" }
+secondscrn-protocol.workspace = true
+secondscrn-session.workspace = true
+secondscrn-diagnostics.workspace = true
+secondscrn-transport.workspace = true
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
+tokio = { workspace = true }
+tracing-appender = "0.2"

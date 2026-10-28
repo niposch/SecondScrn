@@ -1,8 +1,9 @@
 # SecondScrn
 
-Use an Android tablet as a wireless **extended monitor** for a Windows PC.
-Move windows onto it, arrange it in Windows Display settings, and use touch
-or a pressure-sensitive pen to work on your PC.
+Use an Android tablet as a wireless **extended monitor** for a Windows PC
+or a Linux PC (GNOME or KDE Plasma on Wayland). Move windows onto it, arrange
+it in the display settings, and use touch or a pressure-sensitive pen to work
+on your PC.
 
 **[Download v0.0.1](https://github.com/niposch/SecondScrn/releases/tag/v0.0.1)** ·
 [Report an issue](https://github.com/niposch/SecondScrn/issues)
@@ -10,6 +11,7 @@ or a pressure-sensitive pen to work on your PC.
 SecondScrn is an early release. It has been tested on Windows 11 with an
 NVIDIA RTX 4080 SUPER and a Xiaomi Pad 7 Pro. Other GPUs, tablets and networks
 may behave differently; see [tested features and limitations](docs/status.md).
+The Linux app is new in 0.0.2 and less tested than the Windows app.
 
 ## Features
 
@@ -28,7 +30,8 @@ may behave differently; see [tested features and limitations](docs/status.md).
 * Direct local connections: no account, cloud service or signalling server.
   Pinned mutual TLS protects control traffic; WebRTC DTLS-SRTP encrypts video.
 
-The shared core is Rust; the apps use WinUI 3 (C#) and Jetpack Compose (Kotlin).
+The shared core is Rust; the apps use WinUI 3 (C#), GTK 4 / libadwaita
+(Rust, Linux) and Jetpack Compose (Kotlin).
 
 ## Requirements
 
@@ -40,6 +43,12 @@ The shared core is Rust; the apps use WinUI 3 (C#) and Jetpack Compose (Kotlin).
   connection is preferable for high resolutions and frame rates.
 * Administrator access once to install the signed Virtual Display Driver.
   The SecondScrn Windows app itself installs per user.
+* **Linux:** GNOME or KDE Plasma 6 on **Wayland** (the tablet becomes a
+  monitor through the desktop's screen sharing portal; X11 is not
+  supported), GTK 4.14+ and libadwaita 1.5+ (Ubuntu 24.04+, Fedora 40+,
+  Arch, openSUSE Tumbleweed, KDE neon), GStreamer 1.22+ with the PipeWire
+  plugin, and VA-API (Intel, AMD) or the NVIDIA driver for hardware
+  encoding.
 
 ## Getting started
 
@@ -58,6 +67,21 @@ The shared core is Rust; the apps use WinUI 3 (C#) and Jetpack Compose (Kotlin).
 5. Enter the tablet's six-digit pairing code in the PC's pairing prompt.
    Arrange the new monitor in **Windows Settings → System → Display**.
    The paired tablet can reconnect automatically afterwards.
+
+### Linux
+
+1. Install **secondscrn_0.0.2_amd64.deb** (Debian, Ubuntu, KDE neon), or
+   unpack **SecondScrn-0.0.2-linux-x86_64.tar.gz** and run
+   `sudo ./install.sh` (other distributions; see its README for the
+   GStreamer packages). Log out and in once, so the pen tablet permission
+   applies.
+2. Start SecondScrn from the application menu and choose **Allow…** on the
+   Home page: the desktop asks once whether SecondScrn may share a screen
+   and control the pointer. The permission is remembered.
+3. Install the tablet app of the same version, connect and pair as above,
+   then arrange the new monitor in the system display settings
+   (**Display settings…** on the Home page). The monitor exists while a
+   tablet is connected (plus the linger time).
 
 Tap to click, drag to select or move, long-press for a right-click, and use two
 fingers to scroll. Three-finger tap or Android Back opens session options.
@@ -116,6 +140,14 @@ recent rather than letting frames queue up.
 * With an integrated and a dedicated GPU, SecondScrn encodes on the GPU
   Windows runs it on (**Settings → Advanced → Encode on**: Automatic). The
   choice there, or Windows' own graphics setting, overrides it.
+* **Linux:** the pen has pressure and tilt through a virtual tablet
+  (`/dev/uinput`, granted by the package's udev rule); on KDE Plasma it is
+  mapped to the tablet's monitor automatically; on GNOME it may span all
+  monitors (not yet verified). Without the rule the pen moves the pointer.
+  Touch is real multi-touch where the desktop's portal offers it (the
+  Diagnostics page says); otherwise the first finger moves the pointer. Without a hardware encoder SecondScrn falls back to software
+  H.264 (higher CPU load). The Linux app shows available updates but
+  doesn't install them.
 
 When reporting an issue, include app versions, GPU, tablet model, Android
 version, codec, resolution/frame rate and network setup. The Diagnostics page
@@ -131,6 +163,9 @@ dotnet build apps/windows/SecondScrn.App/SecondScrn.App.csproj
 cd apps/android
 ./gradlew assembleDebug
 ```
+
+On Linux: `cargo build -p secondscrn-linux-app` (see Building for the
+system packages).
 
 * [Architecture](docs/architecture.md) · [Security](docs/security.md)
 * [Testing](docs/testing.md) · [Test pattern](docs/test-pattern.html)

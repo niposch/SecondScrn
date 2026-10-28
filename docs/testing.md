@@ -25,6 +25,32 @@ validates the bitstream with ffprobe (resolution, BT.709, limited range),
 checks that no physical display was deactivated, and verifies input mapping on
 the virtual monitor. `discovery` has a real multicast announce/browse test.
 
+## Linux
+
+Without a desktop (WSL, CI): `cargo test -p secondscrn-linux-host` streams a
+GStreamer test pattern through the real host engine to a client over
+loopback and checks the received H.264 with ffmpeg. `secondscrn-linux-cli
+serve --test-pattern` (or the app with `SECONDSCRN_TEST_PATTERN=1`) plus
+`secondscrn-dev-client 127.0.0.1 --codec h264` exercises pairing, streaming
+and reconnection by hand.
+
+On a desktop (KDE Plasma 6 / GNOME, Wayland), per release:
+
+1. `secondscrn-linux-cli probe`: hardware encoders verified (VA-API or NVENC),
+   "Virtual monitors through the desktop portal".
+2. App → **Allow…**: the portal dialog appears once; after a restart it isn't
+   asked again.
+3. Connect the tablet: a new monitor of the tablet's size appears in the
+   display settings; windows can be moved onto it; rotation and a resolution
+   change resize it.
+4. Mouse, scroll, multi-touch gestures and the pen (pressure in a drawing
+   app such as Krita, tilt, eraser, barrel button; on KDE the pen stays on the
+   tablet's monitor).
+5. Disconnect: the monitor stays for the linger time, then disappears; quit
+   removes it at once.
+6. Tray quick controls, autostart (log out and in), close to tray, and the
+   .deb / tar.gz installation on a clean system.
+
 ## Android emulator workflow
 
 ```powershell

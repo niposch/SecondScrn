@@ -1,0 +1,41 @@
+[package]
+name = "secondscrn-linux-host"
+description = "Linux host platform for SecondScrn: virtual monitor through the desktop portal, PipeWire capture and hardware encoding with GStreamer, input injection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "secondscrn_linux_host"
+
+[[bin]]
+name = "secondscrn-linux-cli"
+path = "src/bin/cli.rs"
+
+[dependencies]
+secondscrn-protocol.workspace = true
+secondscrn-session.workspace = true
+secondscrn-security.workspace = true
+secondscrn-transport.workspace = true
+secondscrn-diagnostics.workspace = true
+secondscrn-graphics.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ring.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "remote_desktop", "screencast"] }
+gstreamer = { version = "0.25", features = ["v1_22"] }
+gstreamer-app = { version = "0.25", features = ["v1_22"] }
+gstreamer-video = { version = "0.25", features = ["v1_22"] }
+evdev = "0.13"
+futures-util = "0.3"
+zbus = { version = "5.13", default-features = false, features = ["blocking-api", "tokio"] }
+
+[dev-dependencies]
+tempfile = "3"

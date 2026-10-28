@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=SecondScrn
+GenericName=Tablet as second screen
+Comment=Use your Android tablet as an extra monitor with touch and pen
+Exec=secondscrn
+Icon=dev.secondscrn.SecondScrn
+Terminal=false
+Categories=Utility;GTK;
+Keywords=tablet;monitor;display;screen;second;extend;pen;
+StartupNotify=true
+SingleMainWindow=true

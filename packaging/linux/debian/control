@@ -1,0 +1,15 @@
+Package: secondscrn
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Installed-Size: @SIZE@
+Maintainer: SecondScrn <https://github.com/niposch/SecondScrn>
+Homepage: https://github.com/niposch/SecondScrn
+Depends: libc6 (>= 2.39), libgtk-4-1 (>= 4.14), libadwaita-1-0 (>= 1.5), libgstreamer1.0-0 (>= 1.22), libgstreamer-plugins-base1.0-0 (>= 1.22), gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire, xdg-desktop-portal
+Recommends: xdg-desktop-portal-kde | xdg-desktop-portal-gnome, intel-media-va-driver | mesa-va-drivers, gstreamer1.0-plugins-ugly, curl
+Description: Use your Android tablet as a second screen
+ SecondScrn turns an Android tablet into an extra monitor over Wi-Fi with
+ low latency, touch and pen input (pressure, tilt). Needs GNOME or KDE
+ Plasma on Wayland; video is encoded with VA-API (Intel, AMD) or NVENC
+ (NVIDIA) through GStreamer. The tablet app must run the same version.

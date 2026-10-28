@@ -1,8 +1,9 @@
 # Building
 
-All components build on Windows 11 x64. The Rust core crates (everything
-except `windows-host` and `android-client`'s decoder) also build and test on
-Linux/macOS.
+The Windows and Android apps build on Windows 11 x64. The Rust core crates
+(everything except `windows-host` and `android-client`'s decoder) also build
+and test on Linux/macOS. The Linux app builds on Linux (WSL works for building
+and the headless tests).
 
 ## Toolchain
 
@@ -63,6 +64,36 @@ The `buildRust` task cross-compiles `libsecondscrn_client.so` for arm64-v8a
 and x86_64 with cargo-ndk (always optimised), and `generateBindings` writes the
 Kotlin bindings with `uniffi-bindgen` (library mode). Both outputs are
 gitignored.
+
+## Linux app
+
+System packages (Ubuntu 24.04; the oldest supported base, since binaries
+need its glibc and GTK/libadwaita or newer):
+
+```bash
+sudo apt install build-essential pkg-config clang libgtk-4-dev libadwaita-1-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+  gstreamer1.0-pipewire libdbus-1-dev ffmpeg dpkg-dev fakeroot
+cargo build -p secondscrn-linux-app            # target/debug/secondscrn
+cargo test -p secondscrn-linux-host            # includes an end-to-end test-pattern stream
+packaging/linux/build-release.sh               # .deb and .tar.gz in releases/linux/
+```
+
+`secondscrn-linux-cli` is the headless host:
+
+```bash
+secondscrn-linux-cli probe                     # verified GStreamer encoders, portal support
+secondscrn-linux-cli portal 10                 # opens the virtual monitor for 10 s (permission test)
+secondscrn-linux-cli serve [--test-pattern] [--pin-file path] [--data-dir dir]
+```
+
+Development switches: `SECONDSCRN_TEST_PATTERN=1` makes the app stream a
+moving test pattern instead of a virtual monitor (no desktop needed);
+`SECONDSCRN_ENCODERS=x264enc,vah265enc` limits the encoder candidates (NVENC
+in WSL produces broken pictures, so tests there use x264). With
+`GDK_BACKEND=broadway` and `gtk4-broadwayd` the app's UI can be viewed in a
+browser without a desktop. Data lives in `~/.local/share/SecondScrn`.
 
 ## Dev client
 

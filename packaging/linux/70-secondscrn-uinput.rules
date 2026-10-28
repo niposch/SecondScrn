@@ -1,0 +1,3 @@
+# SecondScrn: lets the logged-in user create the virtual pen tablet (pressure,
+# tilt, eraser) through /dev/uinput. Without it the pen moves the pointer.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
