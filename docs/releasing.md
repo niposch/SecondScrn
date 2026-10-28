@@ -3,8 +3,8 @@
 ## Windows (Velopack)
 
 ```powershell
-./packaging/windows/build-release.ps1 -Version 0.0.1            # -> releases/
-./packaging/windows/build-release.ps1 -Version 0.0.1 -SignParams "/a /fd sha256 /tr http://timestamp.digicert.com /td sha256"
+./packaging/windows/build-release.ps1 -Version 0.0.2            # -> releases/
+./packaging/windows/build-release.ps1 -Version 0.0.2 -SignParams "/a /fd sha256 /tr http://timestamp.digicert.com /td sha256"
 ```
 
 The script builds the Rust core (release), publishes the WinUI app

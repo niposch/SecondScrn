@@ -1,6 +1,6 @@
 # Status, known limitations and roadmap
 
-Version 0.0.2 (in preparation). See the [release notes](release-notes-0.0.2.md).
+Version 0.0.2. See the [release notes](release-notes-0.0.2.md).
 
 ## 0.0.2 changes and validation
 

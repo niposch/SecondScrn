@@ -1,4 +1,4 @@
-# SecondScrn 0.0.2 (draft)
+# SecondScrn 0.0.2
 
 Lower latency on busy or unreliable Wi-Fi, fewer freezes, a reorganised
 Windows app, and versions that are updated in lockstep.

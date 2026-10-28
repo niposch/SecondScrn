@@ -4,7 +4,7 @@ Use an Android tablet as a wireless **extended monitor** for a Windows PC.
 Move windows onto it, arrange it in Windows Display settings, and use touch
 or a pressure-sensitive pen to work on your PC.
 
-**[Download v0.0.1](https://github.com/niposch/SecondScrn/releases/tag/v0.0.1)** ·
+**[Download v0.0.2](https://github.com/niposch/SecondScrn/releases/tag/v0.0.2)** ·
 [Report an issue](https://github.com/niposch/SecondScrn/issues)
 
 SecondScrn is an early release. It has been tested on Windows 11 with an
@@ -50,7 +50,7 @@ The shared core is Rust; the apps use WinUI 3 (C#) and Jetpack Compose (Kotlin).
    **Settings → Tablet monitor**). This installs the separately distributed
    Virtual Display Driver through winget, with an administrator prompt. Allow
    SecondScrn through Windows Firewall when asked.
-3. Install **SecondScrn-0.0.1-android.apk** on the tablet. Android will ask
+3. Install **SecondScrn-0.0.2-android.apk** on the tablet. Android will ask
    you to allow installation from the browser or file manager you use.
 4. Open the tablet app and select the PC. If discovery does not find it, use
    **Connect manually** with an address shown in the Windows app. Guest Wi-Fi,

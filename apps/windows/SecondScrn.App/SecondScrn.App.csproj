@@ -22,7 +22,7 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\SecondScrn.ico</ApplicationIcon>
-    <Version>0.0.1</Version>
+    <Version>0.0.2</Version>
     <Product>SecondScrn</Product>
     <Company>SecondScrn contributors</Company>
     <Copyright>MIT License</Copyright>
